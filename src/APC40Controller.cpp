@@ -32,6 +32,10 @@ bool APC40Controller::init() {
 
     setup_banks();
 
+    // Initialize bank sets to their default banks
+    for (auto* bs : bank_sets)
+        bs->setBank(0);
+
     return true;
 }
 

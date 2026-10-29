@@ -34,6 +34,8 @@ void APC40BankSet::setBank(int bank) {
 
     currentBank = bank;
 
+    std::cout << "Setting bank set " << name << " to " << bankNames[bank] << ")\n";
+
     // LED feedback
     for (int i = 0; i < numBanks; i++) {
         uint8_t btn = bankButtons[i];

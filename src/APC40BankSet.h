@@ -19,8 +19,10 @@ public:
 
     void handleButton(uint8_t note, uint8_t vel, uint8_t channel);
     void handleControlChange(uint8_t cc, uint8_t value, uint8_t channel);
-
+    
+    void setBank(int bank);
     int getCurrentBank() const { return currentBank; }
+    
     const std::string& getName() const { return name; }
     const std::string& getCurrentBankName() const { return bankNames[currentBank]; }
 
@@ -44,5 +46,4 @@ private:
 
     int currentBank = 0;
 
-    void setBank(int bank);
 };
