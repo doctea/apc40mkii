@@ -17,13 +17,13 @@ int main() {
 
     // switch to Mode 1
     const uint8_t message[] = {
-        SYSEX_APPLICATION_IDENTIFIER_MODE_1, // mode
+        APC40MKII::sysex::APPLICATION_MODES::MODE_1, // mode
         0x09, // major version
         0x07, // minor version
         0x01  // bugfix level
     };
     apc.device.send_sysex_command(
-        SYSEX_MESSAGE_TYPE_INTRODUCTION_IDENTIFIER,
+        APC40MKII::sysex::MESSAGE_TYPE_INTRODUCTION_IDENTIFIER,
         4,
         message
     );

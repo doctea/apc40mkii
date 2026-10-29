@@ -1,6 +1,7 @@
 #include "APC40Controller.h"
 #include <iostream>
-#include "APC40Controller.h"
+
+#include "constants.h"
 
 APC40Controller::APC40Controller()
     : device(),
@@ -43,40 +44,34 @@ void APC40Controller::poll() {
     // RtMidi is callback-driven, so nothing needed here yet.
 }
 
-
 void APC40Controller::setup_banks() {
 
     bank_sets[0] = new APC40BankSet(
-        device,
-        "Track Knobs",
-        3,
+        device, "Track Knobs", 3,
         { 
-            APC40MKII_BUTTON_PAN,
-            APC40MKII_BUTTON_SENDS,
-            APC40MKII_BUTTON_USER 
+            APC40MKII::tracks::NOTE_BUTTON_PAN,
+            APC40MKII::tracks::NOTE_BUTTON_SENDS,
+            APC40MKII::tracks::NOTE_BUTTON_USER 
         },
         {
             "Pan",
             "Sends",
             "User"
         },
-        APC40MKII_KNOB_TOP_CC_1,
-        8
+        APC40MKII::tracks::CC_KNOB_1, 8
     );
 
     bank_sets[1] = new APC40BankSet(
-        device,
-        "Device Knobs",
-        8, // or 8, or 16 — your choice
+        device, "Device Knobs", 8,
         { 
-            APC40MKII_BUTTON_DEVICE_1,
-            APC40MKII_BUTTON_DEVICE_2,
-            APC40MKII_BUTTON_DEVICE_3,
-            APC40MKII_BUTTON_DEVICE_4,
-            APC40MKII_BUTTON_DEVICE_5,
-            APC40MKII_BUTTON_DEVICE_6,
-            APC40MKII_BUTTON_DEVICE_7,
-            APC40MKII_BUTTON_DEVICE_8
+            APC40MKII::device::NOTE_BUTTON_1,
+            APC40MKII::device::NOTE_BUTTON_2,
+            APC40MKII::device::NOTE_BUTTON_3,
+            APC40MKII::device::NOTE_BUTTON_4,
+            APC40MKII::device::NOTE_BUTTON_5,
+            APC40MKII::device::NOTE_BUTTON_6,
+            APC40MKII::device::NOTE_BUTTON_7,
+            APC40MKII::device::NOTE_BUTTON_8
         },
         {
             "Device 1",
@@ -88,8 +83,7 @@ void APC40Controller::setup_banks() {
             "Device 7",
             "Device 8"
         },
-        APC40MKII_DEVICE_KNOB_CC_1,
-        8
+        APC40MKII::device::CC_KNOB_1, 8
     );
 
     bank_sets[0]->onBankedChange = [&](int idx, int bank, uint8_t val) {
@@ -100,5 +94,5 @@ void APC40Controller::setup_banks() {
         // Device knobs → synth parameters
     };
 
-    // new APC40Banks(device, "Device Knobs", 8, APC40MKII_DEVICE_KNOB_CC_1, 8)
+    // new APC40Banks(device, "Device Knobs", 8, CC_KNOB_1, 8)
 }

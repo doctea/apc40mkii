@@ -1,6 +1,5 @@
 #pragma once
 #include "APC40Device.h"
-#include "APC40Banks.h"
 #include "APC40BankSet.h"
 #include "APC40Feedback.h"
 

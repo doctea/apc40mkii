@@ -11,7 +11,6 @@ add_executable(apc40_host
     src/main.cpp
     src/APC40Device.cpp
     src/APC40Controller.cpp
-    src/APC40Banks.cpp
     src/APC40Feedback.cpp
     src/APC40BankSet.cpp
 )
