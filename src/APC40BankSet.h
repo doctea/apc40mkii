@@ -22,6 +22,10 @@ public:
     void handleButton(uint8_t note, uint8_t vel, uint8_t channel);
     void handleControlChange(uint8_t cc, uint8_t value, uint8_t channel);
     void setEncoderValue(int encoderIndex, int bank, uint8_t value);
+    bool getEncoderState(int encoderIndex, int bank, APC40VirtualEncoderState& state) const;
+    bool setEncoderState(int encoderIndex, int bank, const APC40VirtualEncoderState& state);
+    bool setEncoderPolarity(int encoderIndex, int bank, APC40EncoderPolarity polarity);
+    bool setEncoderRingMode(int encoderIndex, int bank, APC40EncoderRingMode ringMode);
     
     void setBank(int bank);
     int getCurrentBank() const { return currentBank; }
@@ -49,4 +53,7 @@ private:
     uint8_t baseCC;
     int numEncoders;
     int currentBank = 0;
+
+    APCControl* getEncoderControl(int encoderIndex, int bank) const;
+    void redrawEncoder(int encoderIndex, int bank);
 };

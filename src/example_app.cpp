@@ -1,52 +1,74 @@
-// dummy 'sequencer app' for mocking app behaviour
+#include "example_app.h"
 
-#include <string>
 #include <iostream>
 
-#include "APC40Controller.h"
+void ExampleApp::stop() {
+    isPlaying = false;
+    std::cout << "App state: playback stopped\n";
+}
 
-class ExampleApp {
-    bool isPlaying = false;
-    bool isRecording = false;
+void ExampleApp::play() {
+    isPlaying = true;
+    std::cout << "App state: playback running\n";
+}
 
-    public:
-    void stop() {
-        if (isPlaying) {
-            std::cout << "Stopping playback" << std::endl;
-            isPlaying = false;
-        } else {
-            std::cout << "Playback is already stopped" << std::endl;
-        }
-        // dummy stop function
-    }
-    void play() {
-        // dummy play function
-        if (!isPlaying) {
-            std::cout << "Starting playback" << std::endl;
-            isPlaying = true;
-        } else {
-            std::cout << "Playback is already running" << std::endl;
-        }
-    }
+void ExampleApp::toggleRecording() {
+    isRecording = !isRecording;
+    std::cout << "App state: recording " << (isRecording ? "running" : "stopped") << '\n';
+}
 
-    void record() {
-        if (!isRecording) {
-            std::cout << "Starting recording" << std::endl;
-            isRecording = true;
-        } else {
-            std::cout << "Recording is already running" << std::endl;
-        }
+void ExampleApp::printState() const {
+    std::cout << "App state: playback " << (isPlaying ? "running" : "stopped")
+              << ", recording " << (isRecording ? "running" : "stopped") << '\n';
+}
+
+void ExampleApp::bind_to_apc(APC40Controller& apc) {
+    APCControl* playControl = apc.bind_note(APC40MKII::transport::NOTE_BUTTON_PLAY, 0);
+    APCControl* recordControl = apc.bind_note(APC40MKII::transport::NOTE_BUTTON_RECORD, 0);
+    if (playControl) {
+        playControl->onAPCValueChanged = [this, playControl](float value) {
+            if (value <= 0)
+                return;
+            if (isPlaying)
+                stop();
+            else
+                play();
+            playControl->value = isPlaying ? 1.0f : 0.0f;
+        };
     }
-    void stopRecording() {
-        if (isRecording) {
-            std::cout << "Stopping recording" << std::endl;
-            isRecording = false;
-        } else {
-            std::cout << "Recording is already stopped" << std::endl;
-        }
+    if (recordControl) {
+        recordControl->onAPCValueChanged = [this, recordControl](float value) {
+            if (value <= 0)
+                return;
+            toggleRecording();
+            recordControl->value = isRecording ? 1.0f : 0.0f;
+        };
     }
 
-    void bind_to_apc(APC40Controller &apc) {
-        
-    }
-};
+    apc.onTrackKnobChanged = [](APC40TrackKnobBank bank, uint8_t track, uint8_t value) {
+        const char* bankName = "Pan";
+        if (bank == APC40TrackKnobBank::Sends)
+            bankName = "Sends";
+        else if (bank == APC40TrackKnobBank::User)
+            bankName = "User";
+        std::cout << "Input: Track " << (static_cast<int>(track) + 1) << ' ' << bankName
+                  << " knob = " << static_cast<int>(value) << '\n';
+    };
+
+    apc.onTrackFaderChanged = [](uint8_t track, uint8_t value) {
+        std::cout << "Input: Track " << (static_cast<int>(track) + 1)
+                  << " fader = " << static_cast<int>(value) << '\n';
+    };
+    apc.onMasterFaderChanged = [](uint8_t value) {
+        std::cout << "Input: Master fader = " << static_cast<int>(value) << '\n';
+    };
+    apc.onCrossfaderChanged = [](uint8_t value) {
+        std::cout << "Input: Crossfader = " << static_cast<int>(value) << '\n';
+    };
+    apc.onTempoEncoderDelta = [](int16_t delta) {
+        std::cout << "Input: Tempo encoder delta = " << static_cast<int>(delta) << '\n';
+    };
+    apc.onCueEncoderDelta = [](int16_t delta) {
+        std::cout << "Input: Cue encoder delta = " << static_cast<int>(delta) << '\n';
+    };
+}

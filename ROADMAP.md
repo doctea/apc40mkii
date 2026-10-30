@@ -33,42 +33,68 @@
   state without replaying hardware actions.
 - Mode 1 remains the default. Mode 2 is selectable for fully host-controlled LED
   testing; a default change awaits hardware validation.
-- Nine native regression cases pass under GCC and MSVC. The real Windows host
-  and port tool build; host DLL deployment is independent of working directory.
+- Thirteen native regression cases pass under GCC. The earlier ten-case revision
+   passed under MSVC; rerun the Windows tests after the latest API changes. The
+   real Windows host and port tool build; host DLL deployment is independent of
+   working directory.
+- Desktop port discovery defaults to the `APC40` name substring; failed input
+   or output matches print available MIDI ports.
 
 This is a portable-core foundation, not completed Arduino integration or full
 reconnect support. Arbitrary feedback is not cached, physical hotplug detection
 is backend-specific and unfinished, and allocation cleanup remains to be done.
 
-## Next: Explicit Virtual Knob State
+## Explicit Virtual Knob State: Implemented
 
-1. Make each bank slot's value readable and writable through a small public API.
-   Define stable slot identity from bank set, bank, and encoder, not pointers.
-2. Add per-slot polarity and ring style. Recall both ring configuration and
-   value, sending ring mode before value on selection and reconnect.
-3. Keep hardware-change callbacks distinct from application feedback. Switching
-   banks must never change inactive source values or emit source changes.
-4. Define who owns allocated controls, banks, lists, and bindings; provide
-   cleanup and prevent unsafe copying. Allocate configuration at setup, not
-   while handling input. Do not promise dynamic bank removal yet.
+- Each slot exposes copied `value`, `polarity`, and `ringMode` state addressed by
+   bank and encoder indices, not raw pointers.
+- `DeviceDefault` is the default and does not send ring-mode CCs; `Automatic`
+   optionally maps unipolar to Volume and bipolar to Pan. Explicit
+   Off/Single/Volume/Pan strategies remain independent of polarity.
+- Bank redraw and reconnect send values in `DeviceDefault`; configured ring
+   strategies send their mode CC before the value CC.
+- Hardware-change callbacks remain distinct from app feedback; bank selection
+   does not alter inactive slot values. Physical encoder input relies on the
+   APC's local ring update and is not echoed back as USB MIDI.
+- Ten native tests check independent values and polarity across all 24 track
+   slots, default no-mode feedback, explicit ring modes, and mode-before-value
+   recall.
+
+Still pending from this milestone: define ownership of allocated controls, banks,
+lists, and bindings; add cleanup and prevent unsafe copying before supporting
+dynamic bank creation/removal.
 
 Acceptance: populate all 24 track slots with distinct values and polarities;
 switch every bank and simulate reconnect; every slot remains independent and
 only physical edits invoke the source-change callback.
 
-## Then: Events And Desired Feedback
+## Input Events: Core Implemented
+
+- Exposed eight track-fader callbacks with zero-based track indices, plus master
+   and crossfader absolute-value callbacks.
+- Tempo CC13 and Cue CC47 decode as signed seven-bit deltas; no other CC is
+   treated as relative. The tests cover `0, 1, 63, 64, 65, 127`.
+- Relative encoder acceleration is disabled by default and configurable per
+   Tempo/Cue encoder by the application. An injected monotonic millisecond clock
+   keeps the core independent of Arduino time APIs; accelerated output uses
+   `int16_t` to retain the larger signed step.
+- The desktop example logs all these inputs. Application-specific scaling and
+   tempo policy remain outside the core.
+- Added a logical track-knob API keyed by Pan/Sends/User and zero-based track
+   index. Applications can read/write the complete virtual state and receive
+   physical changes without knowing APC CC numbers or bank-button notes.
+
+## Next: Desired Feedback And Firmware Integration
 
 1. Add explicit control capabilities and channel rules for the remaining
-   buttons, faders, encoders, and grid. Avoid broad note-range heuristics.
+   buttons, encoders, and grid. Avoid broad note-range heuristics.
 2. Expose press/release events independently from desired LED state. Handle
    note-off regardless of its velocity and clear transient held/Shift state on
    disconnect without changing authoritative application state.
-3. Decode only Tempo CC13 and Cue CC47 as signed seven-bit two's complement.
-   Cover values 0, 1, 63, 64, 65, and 127; value 64 means -64, not +64.
-4. Add desired versus sent feedback state, ring mode/value, mono LED states,
+3. Add desired versus sent feedback state, ring mode/value, mono LED states,
    and RGB palette/effect layers. RGB output channels select animation effects,
    not tracks. The application decides whether transient animations replay.
-5. Invalidate sent state on reconnect and redraw after introduction. Bound
+4. Invalidate sent state on reconnect and redraw after introduction. Bound
    feedback work per loop and retain dirty state when sending fails.
 
 Acceptance: changing Play in the app updates its LED without input echo;
@@ -80,8 +106,8 @@ transport actions. Verify RGB palette, effects, and timing on real hardware.
 1. Implement a USB-host transport with explicit attach/detach notification and
    queued application-thread delivery. Use the existing APC USB identity wiring
    as a starting point, not the old behavior stub as an API contract.
-2. Package or clearly select core-only Arduino sources so desktop entry points
-   and RtMidi cannot enter the firmware build.
+2. Use the PlatformIO library manifest to include core-only Arduino sources;
+   desktop entry points and RtMidi are excluded from firmware builds.
 3. Register 24 track-knob sources and eight track faders once, not on reconnect.
    Add Play state/action and signed tempo changes with app-defined scaling.
 4. Add a small optional `parameters` adapter. Normalize source values and map

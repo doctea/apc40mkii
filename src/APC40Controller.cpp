@@ -34,6 +34,17 @@ bool APC40Controller::init() {
     };
 
     device.onControlChange = [&](uint8_t cc, uint8_t channel, uint8_t val) {
+        if (cc == APC40MKII::tracks::CC_FADER && channel < 8 && onTrackFaderChanged)
+            onTrackFaderChanged(channel, val);
+        else if (cc == APC40MKII::tracks::CC_FADER_MASTER && channel == 0 && onMasterFaderChanged)
+            onMasterFaderChanged(val);
+        else if (cc == APC40MKII::CC_CROSSFADER && channel == 0 && onCrossfaderChanged)
+            onCrossfaderChanged(val);
+        else if (cc == APC40MKII::tempo::CC_TEMPO && channel == 0 && onTempoEncoderDelta)
+            onTempoEncoderDelta(applyRelativeAcceleration(val, tempoEncoderState));
+        else if (cc == APC40MKII::tracks::CC_CUE_LEVEL && channel == 0 && onCueEncoderDelta)
+            onCueEncoderDelta(applyRelativeAcceleration(val, cueEncoderState));
+
         for (auto* bs : bank_sets) {
             bs->handleControlChange(cc, val, channel);
         }
@@ -82,6 +93,36 @@ void APC40Controller::loop() {
     device.loop();
 }
 
+void APC40Controller::setMillisProvider(std::function<uint32_t()> provider) {
+    millisProvider = provider;
+    tempoEncoderState.hasPreviousInput = false;
+    cueEncoderState.hasPreviousInput = false;
+}
+
+void APC40Controller::setTempoEncoderAcceleration(APC40EncoderAcceleration acceleration) {
+    tempoEncoderState.acceleration = acceleration;
+    tempoEncoderState.hasPreviousInput = false;
+}
+
+void APC40Controller::setCueEncoderAcceleration(APC40EncoderAcceleration acceleration) {
+    cueEncoderState.acceleration = acceleration;
+    cueEncoderState.hasPreviousInput = false;
+}
+
+int16_t APC40Controller::applyRelativeAcceleration(uint8_t value, RelativeEncoderState& state) {
+    const int16_t delta = static_cast<int16_t>(value < 64 ? value : static_cast<int>(value) - 128);
+    if (delta == 0 || !millisProvider)
+        return delta;
+
+    const uint32_t now = millisProvider();
+    const bool accelerate = state.hasPreviousInput && state.acceleration.thresholdMs > 0 &&
+        state.acceleration.multiplier > 1 &&
+        static_cast<uint32_t>(now - state.lastInputMillis) <= state.acceleration.thresholdMs;
+    state.lastInputMillis = now;
+    state.hasPreviousInput = true;
+    return static_cast<int16_t>(delta * (accelerate ? state.acceleration.multiplier : 1));
+}
+
 void APC40Controller::redraw(APCControl* ctrl) {
     // Implement the logic to update the APC40 MkII hardware based on the control's state
     if (ctrl->type==APCControlType::Button) {
@@ -119,12 +160,18 @@ void APC40Controller::setup_banks() {
         "Sends",
         "User"
     };
-    bank_sets.add(new APC40BankSet(
+    auto* trackKnobs = new APC40BankSet(
         this, "Track Knobs", 3,
         track_buttons,
         track_labels,
         APC40MKII::tracks::CC_KNOB_1, 8
-    ));
+    );
+    trackKnobs->onBankedChange = [this](int track, int bank, uint8_t value) {
+        if (onTrackKnobChanged)
+            onTrackKnobChanged(static_cast<APC40TrackKnobBank>(bank),
+                static_cast<uint8_t>(track), value);
+    };
+    bank_sets.add(trackKnobs);
 
     // device knobs buttons and labels
     uint8_t device_buttons[] = { 
@@ -154,6 +201,22 @@ void APC40Controller::setup_banks() {
         APC40MKII::device::CC_KNOB_1, 8
     ));
 
+}
+
+bool APC40Controller::getTrackKnobState(APC40TrackKnobBank bank, uint8_t track,
+        APC40VirtualEncoderState& state) const {
+    const uint8_t bankIndex = static_cast<uint8_t>(bank);
+    if (bankIndex > static_cast<uint8_t>(APC40TrackKnobBank::User) || bank_sets.empty())
+        return false;
+    return bank_sets[0]->getEncoderState(track, bankIndex, state);
+}
+
+bool APC40Controller::setTrackKnobState(APC40TrackKnobBank bank, uint8_t track,
+        const APC40VirtualEncoderState& state) {
+    const uint8_t bankIndex = static_cast<uint8_t>(bank);
+    if (bankIndex > static_cast<uint8_t>(APC40TrackKnobBank::User) || bank_sets.empty())
+        return false;
+    return bank_sets[0]->setEncoderState(track, bankIndex, state);
 }
 
 APCControl* APC40Controller::bind_cc(uint8_t cc, uint8_t channel) {

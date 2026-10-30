@@ -2,6 +2,7 @@
 #include "APC40Controller.h"
 
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -51,7 +52,16 @@ void require(bool condition, const char* message) {
 
 void expectMessage(const FakeTransport& transport, std::size_t index, FakeTransport::Message message) {
     require(index < transport.sent.size(), "Missing MIDI feedback message");
-    require(transport.sent[index] == message, "Incorrect MIDI feedback bytes");
+    if (transport.sent[index] != message) {
+        std::ostringstream details;
+        details << "Incorrect MIDI feedback bytes at " << index << ": expected";
+        for (uint8_t byte : message)
+            details << ' ' << static_cast<int>(byte);
+        details << ", got";
+        for (uint8_t byte : transport.sent[index])
+            details << ' ' << static_cast<int>(byte);
+        throw std::runtime_error(details.str());
+    }
 }
 
 void testFeedbackBytes() {
@@ -79,7 +89,8 @@ void testBankSelection() {
     expectMessage(transport, 0, {0x90, 87, 0});
     expectMessage(transport, 1, {0x90, 88, 1});
     expectMessage(transport, 2, {0x90, 89, 0});
-    require(transport.sent.size() == 11, "Expected three button LEDs and eight rings");
+    expectMessage(transport, 3, {0xB0, 48, 0});
+    require(transport.sent.size() == 11, "Default ring redraw should only send values");
 
     transport.sent.clear();
     transport.receive({0x90, 89, 0});
@@ -110,7 +121,7 @@ void testBankedValues() {
     transport.receive({0xB0, 48, 73});
     require(calls == 1 && changedEncoder == 0 && changedBank == 0 && changedValue == 73,
             "Encoder event did not reach the application");
-    expectMessage(transport, 0, {0xB0, 48, 73});
+        require(transport.sent.empty(), "Physical encoder input echoed MIDI feedback");
 
     transport.receive({0x90, 88, 127});
     transport.receive({0xB0, 48, 29});
@@ -140,6 +151,95 @@ void testChannelFiltering() {
     require(tracks->getCurrentBank() == 0, "Wrong-channel button changed bank");
     require(calls == 0, "Wrong-channel or unrelated CC reached the application");
     require(transport.sent.empty(), "Ignored input sent feedback");
+}
+
+void testFadersAndRelativeEncoders() {
+    FakeTransport transport;
+    APC40Controller controller(transport);
+    require(controller.init(), "Controller initialization failed");
+
+    std::vector<std::pair<uint8_t, uint8_t>> trackFaders;
+    std::vector<uint8_t> masterFaders;
+    std::vector<uint8_t> crossfaders;
+    std::vector<int16_t> tempoDeltas;
+    std::vector<int16_t> cueDeltas;
+    controller.onTrackFaderChanged = [&](uint8_t track, uint8_t value) {
+        trackFaders.emplace_back(track, value);
+    };
+    controller.onMasterFaderChanged = [&](uint8_t value) { masterFaders.push_back(value); };
+    controller.onCrossfaderChanged = [&](uint8_t value) { crossfaders.push_back(value); };
+    controller.onTempoEncoderDelta = [&](int16_t delta) { tempoDeltas.push_back(delta); };
+    controller.onCueEncoderDelta = [&](int16_t delta) { cueDeltas.push_back(delta); };
+
+    transport.sent.clear();
+    for (uint8_t track = 0; track < 8; ++track)
+        transport.receive({static_cast<uint8_t>(0xB0 | track), APC40MKII::tracks::CC_FADER,
+            static_cast<uint8_t>(track * 16)});
+    transport.receive({0xB0, APC40MKII::tracks::CC_FADER_MASTER, 113});
+    transport.receive({0xB0, APC40MKII::CC_CROSSFADER, 27});
+
+    const uint8_t relativeValues[] = {0, 1, 63, 64, 65, 127};
+    const int16_t expectedDeltas[] = {0, 1, 63, -64, -63, -1};
+    for (std::size_t index = 0; index < sizeof(relativeValues); ++index) {
+        transport.receive({0xB0, APC40MKII::tempo::CC_TEMPO, relativeValues[index]});
+        transport.receive({0xB0, APC40MKII::tracks::CC_CUE_LEVEL, relativeValues[index]});
+    }
+
+    transport.receive({0xB8, APC40MKII::tracks::CC_FADER, 88});
+    transport.receive({0xB1, APC40MKII::tracks::CC_FADER_MASTER, 88});
+    transport.receive({0xB1, APC40MKII::CC_CROSSFADER, 88});
+    transport.receive({0xB1, APC40MKII::tempo::CC_TEMPO, 64});
+    transport.receive({0xB1, APC40MKII::tracks::CC_CUE_LEVEL, 64});
+
+    require(trackFaders.size() == 8, "Track fader channels did not map to all eight tracks");
+    for (uint8_t track = 0; track < 8; ++track)
+        require(trackFaders[track] == std::make_pair(track, static_cast<uint8_t>(track * 16)),
+            "Track fader channel or value was mapped incorrectly");
+    require(masterFaders == std::vector<uint8_t>({113}), "Master fader was not routed");
+    require(crossfaders == std::vector<uint8_t>({27}), "Crossfader was not routed");
+    require(tempoDeltas == std::vector<int16_t>(std::begin(expectedDeltas), std::end(expectedDeltas)),
+        "Tempo encoder signed delta decoding failed");
+    require(cueDeltas == std::vector<int16_t>(std::begin(expectedDeltas), std::end(expectedDeltas)),
+        "Cue encoder signed delta decoding failed");
+    require(transport.sent.empty(), "Input-only surface events sent MIDI feedback");
+}
+
+void testRelativeEncoderAcceleration() {
+    FakeTransport transport;
+    APC40Controller controller(transport);
+    require(controller.init(), "Controller initialization failed");
+
+    uint32_t now = 100;
+    controller.setMillisProvider([&]() { return now; });
+    controller.setTempoEncoderAcceleration({50, 4});
+    controller.setCueEncoderAcceleration({25, 3});
+    std::vector<int16_t> tempoDeltas;
+    std::vector<int16_t> cueDeltas;
+    controller.onTempoEncoderDelta = [&](int16_t delta) { tempoDeltas.push_back(delta); };
+    controller.onCueEncoderDelta = [&](int16_t delta) { cueDeltas.push_back(delta); };
+
+    transport.receive({0xB0, APC40MKII::tempo::CC_TEMPO, 2});
+    now = 130;
+    transport.receive({0xB0, APC40MKII::tempo::CC_TEMPO, 125});
+    now = 200;
+    transport.receive({0xB0, APC40MKII::tempo::CC_TEMPO, 1});
+
+    now = 1000;
+    transport.receive({0xB0, APC40MKII::tracks::CC_CUE_LEVEL, 2});
+    now = 1010;
+    transport.receive({0xB0, APC40MKII::tracks::CC_CUE_LEVEL, 2});
+    now = 1040;
+    transport.receive({0xB0, APC40MKII::tracks::CC_CUE_LEVEL, 127});
+
+    now = UINT32_MAX - 10;
+    transport.receive({0xB0, APC40MKII::tempo::CC_TEMPO, 1});
+    now = 10;
+    transport.receive({0xB0, APC40MKII::tempo::CC_TEMPO, 1});
+
+    require(tempoDeltas == std::vector<int16_t>({2, -12, 1, 1, 4}),
+        "Tempo acceleration did not preserve direction, threshold, or wraparound");
+    require(cueDeltas == std::vector<int16_t>({2, 6, -1}),
+        "Cue acceleration did not use its independent configuration");
 }
 
 void testApplicationFeedback() {
@@ -189,6 +289,129 @@ void testConstBankDefinitions() {
     expectMessage(transport, 1, {0x90, 11, 1});
     expectMessage(transport, 2, {0xB0, 16, 0});
     expectMessage(transport, 3, {0xB0, 17, 0});
+}
+
+void testVirtualEncoderState() {
+    FakeTransport transport;
+    APC40Controller controller(transport);
+    require(controller.init(), "Controller initialization failed");
+    APC40BankSet* tracks = controller.bank_sets[0];
+
+    for (int bank = 0; bank < 3; ++bank) {
+        for (int encoder = 0; encoder < 8; ++encoder) {
+            APC40VirtualEncoderState state;
+            state.value = static_cast<uint8_t>(bank * 32 + encoder);
+            state.polarity = (bank + encoder) % 2 == 0
+                ? APC40EncoderPolarity::Unipolar : APC40EncoderPolarity::Bipolar;
+            state.ringMode = APC40EncoderRingMode::Automatic;
+            if (bank == 1 && encoder == 3)
+                state.ringMode = APC40EncoderRingMode::Off;
+            if (bank == 2 && encoder == 4)
+                state.ringMode = APC40EncoderRingMode::Single;
+            require(tracks->setEncoderState(encoder, bank, state), "Could not set virtual encoder state");
+        }
+    }
+
+    for (int bank = 0; bank < 3; ++bank) {
+        for (int encoder = 0; encoder < 8; ++encoder) {
+            APC40VirtualEncoderState state;
+            require(tracks->getEncoderState(encoder, bank, state), "Could not read virtual encoder state");
+            require(state.value == bank * 32 + encoder, "Virtual encoder values were shared between slots");
+            require(state.polarity == ((bank + encoder) % 2 == 0
+                ? APC40EncoderPolarity::Unipolar : APC40EncoderPolarity::Bipolar),
+                "Virtual encoder polarity was not retained");
+            const APC40EncoderRingMode expectedMode = bank == 1 && encoder == 3
+                ? APC40EncoderRingMode::Off
+                : bank == 2 && encoder == 4
+                    ? APC40EncoderRingMode::Single
+                    : APC40EncoderRingMode::Automatic;
+            require(state.ringMode == expectedMode, "Explicit ring mode was not retained");
+        }
+    }
+
+    APC40VirtualEncoderState invalidState;
+    require(!tracks->getEncoderState(8, 0, invalidState),
+        "Out-of-range virtual encoder state was readable");
+    transport.sent.clear();
+    tracks->setBank(2);
+    expectMessage(transport, 3, {0xB0, 56, 2});
+    expectMessage(transport, 4, {0xB0, 48, 64});
+    expectMessage(transport, 7, {0xB0, 58, 2});
+    expectMessage(transport, 8, {0xB0, 50, 66});
+    expectMessage(transport, 11, {0xB0, 60, 1});
+    expectMessage(transport, 12, {0xB0, 52, 68});
+
+    require(tracks->setEncoderPolarity(0, 2, APC40EncoderPolarity::Bipolar),
+        "Could not update active slot polarity");
+    expectMessage(transport, 19, {0xB0, 56, 3});
+    expectMessage(transport, 20, {0xB0, 48, 64});
+    require(tracks->setEncoderRingMode(0, 2, APC40EncoderRingMode::Single),
+        "Could not override automatic ring mode");
+    expectMessage(transport, 21, {0xB0, 56, 1});
+    expectMessage(transport, 22, {0xB0, 48, 64});
+    require(tracks->setEncoderPolarity(0, 2, APC40EncoderPolarity::Unipolar),
+        "Could not change polarity with explicit ring mode");
+    expectMessage(transport, 23, {0xB0, 56, 1});
+
+    transport.sent.clear();
+    tracks->setBank(0);
+    require(transport.sent[3] == FakeTransport::Message({0xB0, 56, 2}),
+        "Unipolar automatic mode did not select Volume");
+    require(transport.sent[5] == FakeTransport::Message({0xB0, 57, 3}),
+        "Bipolar automatic mode did not select Pan");
+}
+
+void testLogicalTrackKnobAPI() {
+    FakeTransport transport;
+    APC40Controller controller(transport);
+    require(controller.init(), "Controller initialization failed");
+
+    const APC40VirtualEncoderState panState = {
+        23, APC40EncoderPolarity::Bipolar, APC40EncoderRingMode::Pan
+    };
+    const APC40VirtualEncoderState sendsState = {
+        71, APC40EncoderPolarity::Unipolar, APC40EncoderRingMode::Volume
+    };
+    const APC40VirtualEncoderState userState = {
+        109, APC40EncoderPolarity::Bipolar, APC40EncoderRingMode::Single
+    };
+    require(controller.setTrackKnobState(APC40TrackKnobBank::Pan, 3, panState),
+        "Could not set logical Pan knob state");
+    require(controller.setTrackKnobState(APC40TrackKnobBank::Sends, 3, sendsState),
+        "Could not set logical Sends knob state");
+    require(controller.setTrackKnobState(APC40TrackKnobBank::User, 3, userState),
+        "Could not set logical User knob state");
+
+    APC40VirtualEncoderState actualState;
+    require(controller.getTrackKnobState(APC40TrackKnobBank::Pan, 3, actualState) &&
+        actualState.value == panState.value && actualState.polarity == panState.polarity &&
+        actualState.ringMode == panState.ringMode, "Logical Pan knob state was not retained");
+    require(controller.getTrackKnobState(APC40TrackKnobBank::Sends, 3, actualState) &&
+        actualState.value == sendsState.value && actualState.polarity == sendsState.polarity &&
+        actualState.ringMode == sendsState.ringMode, "Logical Sends knob state was not independent");
+    require(controller.getTrackKnobState(APC40TrackKnobBank::User, 3, actualState) &&
+        actualState.value == userState.value && actualState.polarity == userState.polarity &&
+        actualState.ringMode == userState.ringMode, "Logical User knob state was not independent");
+    require(!controller.getTrackKnobState(static_cast<APC40TrackKnobBank>(3), 3, actualState) &&
+        !controller.setTrackKnobState(APC40TrackKnobBank::Pan, 8, panState),
+        "Invalid logical knob address was accepted");
+
+    APC40TrackKnobBank changedBank = APC40TrackKnobBank::Pan;
+    uint8_t changedTrack = 0;
+    uint8_t changedValue = 0;
+    controller.onTrackKnobChanged = [&](APC40TrackKnobBank bank, uint8_t track, uint8_t value) {
+        changedBank = bank;
+        changedTrack = track;
+        changedValue = value;
+    };
+    transport.receive({0x90, APC40MKII::tracks::NOTE_BUTTON_USER, 127});
+    transport.receive({0xB0, static_cast<uint8_t>(APC40MKII::tracks::CC_KNOB_1 + 3), 44});
+    require(changedBank == APC40TrackKnobBank::User && changedTrack == 3 && changedValue == 44,
+        "Logical knob callback did not identify its bank and track");
+    require(controller.getTrackKnobState(APC40TrackKnobBank::User, 3, actualState) &&
+        actualState.value == 44 && actualState.polarity == userState.polarity &&
+        actualState.ringMode == userState.ringMode,
+        "Physical turn did not update only the addressed logical knob value");
 }
 
 void testMessageDecoding() {
@@ -309,8 +532,12 @@ int main() {
         {"bank selection", testBankSelection},
         {"banked values and recall", testBankedValues},
         {"channel filtering", testChannelFiltering},
+        {"faders and relative encoders", testFadersAndRelativeEncoders},
+        {"relative encoder acceleration", testRelativeEncoderAcceleration},
         {"application feedback", testApplicationFeedback},
         {"const bank definitions", testConstBankDefinitions},
+        {"independent virtual encoder state", testVirtualEncoderState},
+        {"logical track knob API", testLogicalTrackKnobAPI},
         {"message decoding and malformed input", testMessageDecoding},
         {"SysEx lengths and bounds", testSysExBounds},
         {"startup and reconnect state", testConnectionResynchronization},

@@ -1,0 +1,23 @@
+{
+  "name": "apc40mkii",
+  "version": "0.1.0",
+  "description": "APC40 MkII controller and portable MIDI core",
+  "keywords": [
+    "midi",
+    "controller",
+    "akai",
+    "apc40"
+  ],
+  "frameworks": "arduino",
+  "platforms": "teensy",
+  "build": {
+    "srcFilter": [
+      "+<*>",
+      "-<APC40RtMidiTransport.cpp>",
+      "-<WinMidiDeviceQuery.cpp>",
+      "-<main.cpp>",
+      "-<example_app.cpp>",
+      "-<list_ports.cpp>"
+    ]
+  }
+}

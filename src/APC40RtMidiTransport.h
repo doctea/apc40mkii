@@ -7,7 +7,7 @@
 
 class APC40RtMidiTransport : public APC40Transport {
 public:
-    explicit APC40RtMidiTransport(const std::string& portName = "USB Audio Device");
+    explicit APC40RtMidiTransport(const std::string& portName = "APC40");
     ~APC40RtMidiTransport() override;
 
     bool open() override;

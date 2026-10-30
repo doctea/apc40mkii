@@ -13,13 +13,29 @@ The host uses the local copies of RtMidi and foundling under `external/`.
 
 ```sh
 cmake -S . -B build
-cmake --build build --config Debug --target apc40_host
+cmake --build build --config Debug --target apc40_host list_ports
 ```
 
 On Windows, run `build/Debug/apc40_host.exe`. The current device discovery looks
-for MIDI ports whose names contain `USB Audio Device`. Pass another name
-substring to the transport constructor when necessary. Windows host builds copy
+for MIDI ports whose names contain `APC40` (matching `APC40 mkII`). Pass another
+name substring to the transport constructor when necessary. A failed match
+prints the available input and output port names. Windows host builds copy
 the RtMidi DLL beside `apc40_host` and `list_ports` when building a shared RtMidi.
+
+For a Windows hardware smoke test, stop any older host process, rebuild, and
+check that `list_ports` shows an APC40 input and output before launching the
+host:
+
+```powershell
+.\build\Debug\list_ports.exe
+.\build\Debug\apc40_host.exe
+```
+
+Successful startup prints `APC40 MkII connected.` and sends the introduction
+before drawing bank LEDs and encoder rings. Play and Record toggle the mock app
+state, print the new state, and update their LEDs. Track-knob turns print the
+logical bank, track, and value; faders and relative encoder deltas are also
+reported. The APC updates its own encoder ring locally.
 
 ```cpp
 #include "APC40Controller.h"
@@ -54,11 +70,13 @@ cmake --build build-tests --config Debug --target apc40_tests
 cmake -E chdir build-tests ctest -C Debug -R apc40_native --output-on-failure
 ```
 
-The suite covers bank selection, releases, invalid bank indices, independent
-bank values, recalled ring feedback, MIDI channel filtering, outgoing MIDI
-bytes, and application-driven updates without callback echo. Nine cases also
-cover malformed MIDI, note-on-zero releases, bounded seven-bit SysEx encoding,
-introduction ordering, repeated initialization, and simulated reconnection.
+The 13-case suite covers bank selection, releases, invalid bank indices,
+independent bank values, recalled ring feedback, MIDI channel filtering,
+outgoing MIDI bytes, and application-driven updates without callback echo. It
+also covers malformed MIDI, note-on-zero releases, bounded seven-bit SysEx
+encoding, introduction ordering, simulated reconnection, signed relative
+encoder boundaries, fader routing, and the logical API for all 24 track-knob
+slots.
 
 ## Banked Controls
 
@@ -77,6 +95,17 @@ application updates above 127 are clamped. MIDI channels in the device API are
 zero-based too: channel `0` means MIDI channel 1. The current bank sets use
 channel `0`.
 
+Each banked encoder has independent value, polarity, and ring-mode state. Use
+`getEncoderState()` and `setEncoderState()` with a bank and encoder index to copy
+the complete state in or out. The default `DeviceDefault` ring mode leaves the
+APC's native strategy untouched; bank redraw sends the value without a ring-mode
+CC. `Automatic` is an opt-in strategy that maps unipolar to Volume and bipolar
+to Pan. `setEncoderRingMode()` can also choose Off, Single, Volume, or Pan
+explicitly. For these configured modes, bank redraw sends the ring-mode CC
+before the value CC. Physical turns update the retained source and call
+`onBankedChange` without echoing a CC back to the APC; application value changes
+and bank recalls still send value feedback.
+
 ```cpp
 APC40BankSet* tracks = apc.bank_sets[0];
 tracks->setEncoderValue(2, 1, 96);
@@ -88,6 +117,36 @@ such as `(uint8_t[]){...}`, which are not standard C++ and fail with MSVC.
 The constructor accepts `const uint8_t[]` and `const char* const[]`. Bank names
 are borrowed: the name table and strings must outlive the bank set. Static
 arrays are suitable for fixed firmware layouts.
+
+`APC40Controller` also exposes input callbacks for faders and relative
+encoders:
+
+- `onTrackFaderChanged(trackIndex, value)` uses zero-based track indices `0-7`
+  and absolute MIDI values `0-127`.
+- `onMasterFaderChanged(value)` and `onCrossfaderChanged(value)` report absolute
+  values `0-127` on MIDI channel 1.
+- `onTempoEncoderDelta(delta)` and `onCueEncoderDelta(delta)` report signed
+  `int16_t` steps. Only Tempo CC13 and Cue CC47 use this decoder; `0x40` is `-64`.
+
+Acceleration is disabled by default. Applications can provide a monotonic
+millisecond clock and configure independent thresholds and multipliers for
+Tempo and Cue; the controller applies the configured multiplier to detents
+arriving within the threshold. For example, on Arduino:
+
+```cpp
+apc.setMillisProvider([] { return millis(); });
+apc.setTempoEncoderAcceleration({60, 3});
+```
+
+The host example prints the resulting steps. BPM range, step scaling, and any
+further application policy stay outside the controller.
+
+For application code, the 24 track knobs are addressed logically with
+`APC40TrackKnobBank::{Pan, Sends, User}` and a zero-based track index. Use
+`getTrackKnobState` and `setTrackKnobState` to retain each slot's value,
+polarity, and ring mode, and `onTrackKnobChanged(bank, track, value)` for
+physical turns. This API does not require applications to know the APC's CC
+numbers or bank-button notes.
 
 ## Transport Contract
 
@@ -110,8 +169,8 @@ controller is destroyed. One device exclusively owns the transport callbacks.
   by `apc.loop()`. Do not invoke application callbacks from a USB interrupt or
   background MIDI thread.
 
-The RtMidi adapter uses its 256-message input queue and dispatches at most 64
-messages per loop. It retains the original port-name matching behavior. It does
+The RtMidi adapter defaults to matching the port-name substring `APC40`, and
+dispatches at most 64 messages from its 256-message input queue per loop. It does
 not implement reliable physical unplug detection or automatic reopen; an
 explicit `close()`/`open()` reports the transitions. RtMidi's `isPortOpen()` can
 remain true after unplugging, so it is not proof of physical connection.
@@ -130,6 +189,12 @@ button, use `setAppValue()` followed by `apc.redraw(control)` for immediate LED
 feedback; arbitrary LEDs and RGB layers still need the planned state model.
 
 ## Arduino Boundary
+
+This repository is also a PlatformIO Arduino library. Its `library.json`
+excludes the RtMidi host, Windows port query, desktop example, and test entry
+points; Nexus6 can include `APC40Controller.h` and link the library's core
+sources. The controller's `GenericList` dependency is provided by the existing
+local `foundling` library already declared in Nexus6's `platformio.ini`.
 
 The core builds without RtMidi or desktop logging, but this is not yet a packaged
 Arduino library. Arduino builds must exclude the desktop main, port tool, and

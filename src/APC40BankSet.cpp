@@ -94,32 +94,143 @@ void APC40BankSet::handleControlChange(uint8_t cc, uint8_t value, uint8_t channe
 
     APCControl *encoder = (*encoders)[idx];
     encoder->value = value;
-    controller.device.sendCC(encoder->midiCC, value, encoder->midiChannel);
 
     if (onBankedChange)
         onBankedChange(idx, currentBank, value);
 }
 
 void APC40BankSet::setEncoderValue(int encoderIndex, int bank, uint8_t value) {
-    if (bank < 0 || bank >= numBanks || encoderIndex < 0 || encoderIndex >= numEncoders)
+    APCControl* encoder = getEncoderControl(encoderIndex, bank);
+    if (!encoder)
         return;
 
     if (value > 127)
         value = 127;
-
-    APCControl* encoder = (*(*bankEncoders)[bank])[encoderIndex];
     encoder->value = value;
 
     if (bank == currentBank)
         controller.device.sendCC(encoder->midiCC, value, encoder->midiChannel);
 }
 
+APCControl* APC40BankSet::getEncoderControl(int encoderIndex, int bank) const {
+    if (bank < 0 || bank >= numBanks || encoderIndex < 0 || encoderIndex >= numEncoders)
+        return nullptr;
+    return (*(*bankEncoders)[bank])[encoderIndex];
+}
+
+bool APC40BankSet::getEncoderState(int encoderIndex, int bank, APC40VirtualEncoderState& state) const {
+    APCControl* encoder = getEncoderControl(encoderIndex, bank);
+    if (!encoder)
+        return false;
+    state.value = static_cast<uint8_t>(encoder->value);
+    state.polarity = encoder->polarity;
+    state.ringMode = encoder->ringMode;
+    return true;
+}
+
+bool APC40BankSet::setEncoderState(int encoderIndex, int bank, const APC40VirtualEncoderState& state) {
+    APCControl* encoder = getEncoderControl(encoderIndex, bank);
+    if (!encoder || state.value > 127)
+        return false;
+    switch (state.ringMode) {
+        case APC40EncoderRingMode::Automatic:
+        case APC40EncoderRingMode::DeviceDefault:
+        case APC40EncoderRingMode::Off:
+        case APC40EncoderRingMode::Single:
+        case APC40EncoderRingMode::Volume:
+        case APC40EncoderRingMode::Pan:
+            break;
+        default:
+            return false;
+    }
+    if (state.polarity != APC40EncoderPolarity::Unipolar &&
+        state.polarity != APC40EncoderPolarity::Bipolar)
+        return false;
+
+    encoder->value = state.value;
+    encoder->polarity = state.polarity;
+    encoder->ringMode = state.ringMode;
+    if (bank == currentBank)
+        redrawEncoder(encoderIndex, bank);
+    return true;
+}
+
+bool APC40BankSet::setEncoderPolarity(int encoderIndex, int bank, APC40EncoderPolarity polarity) {
+    APCControl* encoder = getEncoderControl(encoderIndex, bank);
+    if (!encoder || (polarity != APC40EncoderPolarity::Unipolar &&
+        polarity != APC40EncoderPolarity::Bipolar))
+        return false;
+    encoder->polarity = polarity;
+    if (bank == currentBank && encoder->ringMode != APC40EncoderRingMode::DeviceDefault)
+        redrawEncoder(encoderIndex, bank);
+    return true;
+}
+
+bool APC40BankSet::setEncoderRingMode(int encoderIndex, int bank, APC40EncoderRingMode ringMode) {
+    APCControl* encoder = getEncoderControl(encoderIndex, bank);
+    if (!encoder)
+        return false;
+    switch (ringMode) {
+        case APC40EncoderRingMode::Automatic:
+        case APC40EncoderRingMode::DeviceDefault:
+        case APC40EncoderRingMode::Off:
+        case APC40EncoderRingMode::Single:
+        case APC40EncoderRingMode::Volume:
+        case APC40EncoderRingMode::Pan:
+            break;
+        default:
+            return false;
+    }
+    encoder->ringMode = ringMode;
+    if (bank == currentBank)
+        redrawEncoder(encoderIndex, bank);
+    return true;
+}
+
+void APC40BankSet::redrawEncoder(int encoderIndex, int bank) {
+    APCControl* encoder = getEncoderControl(encoderIndex, bank);
+    if (!encoder)
+        return;
+
+    if (encoder->ringMode == APC40EncoderRingMode::DeviceDefault) {
+        controller.device.sendCC(encoder->midiCC,
+            static_cast<uint8_t>(encoder->value), encoder->midiChannel);
+        return;
+    }
+
+    APC40EncoderRingMode ringMode = encoder->ringMode;
+    if (ringMode == APC40EncoderRingMode::Automatic)
+        ringMode = encoder->polarity == APC40EncoderPolarity::Bipolar
+            ? APC40EncoderRingMode::Pan : APC40EncoderRingMode::Volume;
+
+    uint8_t modeValue = 1;
+    switch (ringMode) {
+        case APC40EncoderRingMode::Off:
+            modeValue = 0;
+            break;
+        case APC40EncoderRingMode::Single:
+            modeValue = 1;
+            break;
+        case APC40EncoderRingMode::Volume:
+            modeValue = 2;
+            break;
+        case APC40EncoderRingMode::Pan:
+            modeValue = 3;
+            break;
+        case APC40EncoderRingMode::DeviceDefault:
+            break;
+        case APC40EncoderRingMode::Automatic:
+            break;
+    }
+
+    controller.device.sendCC(static_cast<uint8_t>(baseCC + 8 + encoderIndex),
+        modeValue, encoder->midiChannel);
+    controller.device.sendCC(encoder->midiCC,
+        static_cast<uint8_t>(encoder->value), encoder->midiChannel);
+}
+
 void APC40BankSet::redraw() {
-    // Simple ring feedback: show bank index visually
     for (int i = 0; i < numEncoders; i++) {
-        GenericList<APCControl*> *encoders = (*bankEncoders)[currentBank];
-        uint8_t cc = baseCC + i;
-        uint8_t ringValue = (uint8_t) (*encoders)[i]->value;
-        controller.device.sendCC(cc, ringValue, 0);
+        redrawEncoder(i, currentBank);
     }
 }

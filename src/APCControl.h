@@ -3,9 +3,29 @@
 #include <string>
 #include <cstdint>
 
+enum class APC40EncoderPolarity {
+    Unipolar,
+    Bipolar
+};
+
+enum class APC40EncoderRingMode {
+    DeviceDefault,
+    Automatic,
+    Off,
+    Single,
+    Volume,
+    Pan
+};
+
 enum class APCControlType {
     Button,
     Encoder
+};
+
+struct APC40VirtualEncoderState {
+    uint8_t value = 0;
+    APC40EncoderPolarity polarity = APC40EncoderPolarity::Unipolar;
+    APC40EncoderRingMode ringMode = APC40EncoderRingMode::DeviceDefault;
 };
 
 class APCControl {
@@ -36,6 +56,8 @@ public:
     uint8_t ledOff = 0;
 
     float value = 0.0f;
+    APC40EncoderPolarity polarity = APC40EncoderPolarity::Unipolar;
+    APC40EncoderRingMode ringMode = APC40EncoderRingMode::DeviceDefault;
 
     // Callbacks
     std::function<void(float)> onAppValueChanged;   // App → APC

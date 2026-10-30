@@ -1,5 +1,6 @@
 #include "APC40Controller.h"
 #include "APC40RtMidiTransport.h"
+#include "example_app.h"
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -16,6 +17,9 @@ int main() {
     }
 
     std::cout << "APC40 MkII connected." << std::endl;
+    ExampleApp app;
+    app.bind_to_apc(apc);
+    app.printState();
 
     while (true) {
         apc.loop();

@@ -21,19 +21,37 @@ bool APC40RtMidiTransport::open() {
                 break;
         }
         incoming.clear();
-        for (unsigned int index = 0; index < midiIn.getPortCount(); ++index) {
+        bool inputFound = false;
+        const unsigned int inputCount = midiIn.getPortCount();
+        for (unsigned int index = 0; index < inputCount; ++index) {
             if (midiIn.getPortName(index).find(portName) != std::string::npos) {
                 midiIn.openPort(index);
+                inputFound = true;
                 break;
             }
         }
-        for (unsigned int index = 0; index < midiOut.getPortCount(); ++index) {
+        bool outputFound = false;
+        const unsigned int outputCount = midiOut.getPortCount();
+        for (unsigned int index = 0; index < outputCount; ++index) {
             if (midiOut.getPortName(index).find(portName) != std::string::npos) {
                 midiOut.openPort(index);
+                outputFound = true;
                 break;
             }
         }
         if (!midiIn.isPortOpen() || !midiOut.isPortOpen()) {
+            if (!inputFound) {
+                std::cerr << "No APC40 MIDI input matching '" << portName << "'. Available inputs:";
+                for (unsigned int index = 0; index < inputCount; ++index)
+                    std::cerr << "\n  " << index << ": " << midiIn.getPortName(index);
+                std::cerr << '\n';
+            }
+            if (!outputFound) {
+                std::cerr << "No APC40 MIDI output matching '" << portName << "'. Available outputs:";
+                for (unsigned int index = 0; index < outputCount; ++index)
+                    std::cerr << "\n  " << index << ": " << midiOut.getPortName(index);
+                std::cerr << '\n';
+            }
             close();
             return false;
         }
