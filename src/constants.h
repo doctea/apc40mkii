@@ -160,7 +160,7 @@ namespace APC40MKII {
         constexpr uint8_t CC_TEMPO    = 13;  // that weird two's complement thing for tempo control too
     }
 
-    namespace play {
+    namespace transport {
         constexpr uint8_t NOTE_BUTTON_PLAY     = 91;
         constexpr uint8_t NOTE_BUTTON_RECORD   = 93;
         constexpr uint8_t NOTE_BUTTON_SESSION  = 102;

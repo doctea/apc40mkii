@@ -1,65 +1,92 @@
 #include "APC40Device.h"
-#include <iostream>
+
+APC40Device::APC40Device(APC40Transport& transport) : transport(transport) {
+    transport.onMessage = [this](const uint8_t* data, std::size_t size) {
+        receiveMessage(data, size);
+    };
+    transport.onConnectionChanged = [this](bool connected) {
+        if (onConnectionChanged)
+            onConnectionChanged(connected);
+    };
+}
+
+APC40Device::~APC40Device() {
+    transport.onMessage = nullptr;
+    transport.onConnectionChanged = nullptr;
+}
 
 bool APC40Device::open() {
-    bool openedIn = false;
-    bool openedOut = false;
-
-    unsigned int nIn = midiIn.getPortCount();
-    for (unsigned int i = 0; i < nIn; i++) {
-        auto name = midiIn.getPortName(i);
-        if (name.find("USB Audio Device") != std::string::npos) {
-            midiIn.openPort(i);
-            openedIn = true;
-            break;
-        }
-    }
-
-    unsigned int nOut = midiOut.getPortCount();
-    for (unsigned int i = 0; i < nOut; i++) {
-        auto name = midiOut.getPortName(i);
-        if (name.find("USB Audio Device") != std::string::npos) {
-            midiOut.openPort(i);
-            openedOut = true;
-            break;
-        }
-    }
-
-    if (!openedIn || !openedOut) {
-        std::cerr << "Could not find APC40 MkII ports\n";
-        return false;
-    }
-
-
-    midiIn.setCallback([](double, std::vector<unsigned char>* msg, void* userData) {
-        auto* self = static_cast<APC40Device*>(userData);
-        uint8_t status = (*msg)[0] & 0xF0;
-
-        if (status == 0x90) {
-            if (self->onNoteOn) self->onNoteOn((*msg)[1], (*msg)[0] & 0x0F, (*msg)[2]);
-        } else if (status == 0x80) {
-            if (self->onNoteOff) self->onNoteOff((*msg)[1], (*msg)[0] & 0x0F, (*msg)[2]);
-        } else if (status == 0xB0) {
-            if (self->onControlChange) self->onControlChange((*msg)[1], (*msg)[0] & 0x0F, (*msg)[2]);
-        }
-    }, this);
-
-    midiIn.ignoreTypes(false, false, false);
-
-    return true;
+    return transport.open();
 }
 
-void APC40Device::sendNoteOn(uint8_t note, uint8_t channel, uint8_t velocity) {
-    std::vector<unsigned char> msg = {static_cast<uint8_t>(0x90 | (channel & 0x0F)), note, velocity};
-    midiOut.sendMessage(&msg);
+bool APC40Device::isConnected() const {
+    return transport.isConnected();
 }
 
-void APC40Device::sendNoteOff(uint8_t note, uint8_t channel, uint8_t velocity) {
-    std::vector<unsigned char> msg = {static_cast<uint8_t>(0x80 | (channel & 0x0F)), note, velocity};
-    midiOut.sendMessage(&msg);
+void APC40Device::loop() {
+    transport.poll();
 }
 
-void APC40Device::sendCC(uint8_t cc, uint8_t channel, uint8_t value) {
-    std::vector<unsigned char> msg = {static_cast<uint8_t>(0xB0 | (channel & 0x0F)), cc, value};
-    midiOut.sendMessage(&msg);
+void APC40Device::receiveMessage(const uint8_t* data, std::size_t size) {
+    if (!data || size == 0)
+        return;
+
+    if (data[0] == 0xF0) {
+        if (size >= 2 && data[size - 1] == 0xF7 && onSystemExclusive)
+            onSystemExclusive(data, size);
+        return;
+    }
+
+    if (size != 3 || data[1] > 127 || data[2] > 127)
+        return;
+
+    const uint8_t status = data[0] & 0xF0;
+    const uint8_t channel = data[0] & 0x0F;
+    if (status == 0x80 || (status == 0x90 && data[2] == 0)) {
+        if (onNoteOff)
+            onNoteOff(data[1], channel, data[2]);
+    } else if (status == 0x90) {
+        if (onNoteOn)
+            onNoteOn(data[1], channel, data[2]);
+    } else if (status == 0xB0) {
+        if (onControlChange)
+            onControlChange(data[1], channel, data[2]);
+    }
+}
+
+void APC40Device::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
+    if (!isConnected() || note > 127 || velocity > 127 || channel > 15)
+        return;
+    const uint8_t message[] = {static_cast<uint8_t>(0x90 | channel), note, velocity};
+    transport.sendMessage(message, sizeof(message));
+}
+
+void APC40Device::sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) {
+    if (!isConnected() || note > 127 || velocity > 127 || channel > 15)
+        return;
+    const uint8_t message[] = {static_cast<uint8_t>(0x80 | channel), note, velocity};
+    transport.sendMessage(message, sizeof(message));
+}
+
+void APC40Device::sendCC(uint8_t cc, uint8_t value, uint8_t channel) {
+    if (!isConnected() || cc > 127 || value > 127 || channel > 15)
+        return;
+    const uint8_t message[] = {static_cast<uint8_t>(0xB0 | channel), cc, value};
+    transport.sendMessage(message, sizeof(message));
+}
+
+void APC40Device::send_sysex_command(uint8_t message_identifier, int16_t size, const uint8_t* data) {
+    if (!isConnected() || message_identifier > 127 || size < 0 || size > 248 || (size > 0 && !data))
+        return;
+
+    uint8_t message[256] = {0xF0, 0x47, 0x7F, 0x29, message_identifier,
+                           static_cast<uint8_t>((size >> 7) & 0x7F),
+                           static_cast<uint8_t>(size & 0x7F)};
+    for (int index = 0; index < size; ++index) {
+        if (data[index] > 127)
+            return;
+        message[7 + index] = data[index];
+    }
+    message[7 + size] = 0xF7;
+    transport.sendMessage(message, static_cast<std::size_t>(size) + 8);
 }

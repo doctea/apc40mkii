@@ -1,30 +1,35 @@
 #pragma once
-#include <string>
-#include <vector>
 #include <functional>
 #include <cstdint>
-#include "APC40Device.h"
+#include "APC40Controller.h"
+
+#include "APCControl.h"
+
+#include "GenericList.h"
 
 class APC40BankSet {
 public:
     APC40BankSet(
-        APC40Device& dev,
-        const std::string& name,
+        APC40Controller* controller,
+        const char *name,
         int numBanks,
-        const std::vector<uint8_t>& bankButtons,
-        const std::vector<std::string>& bankNames,
+        const uint8_t bankButtons[],
+        const char *const bankNames[],
         uint8_t baseCC,
         int numEncoders
     );
 
     void handleButton(uint8_t note, uint8_t vel, uint8_t channel);
     void handleControlChange(uint8_t cc, uint8_t value, uint8_t channel);
+    void setEncoderValue(int encoderIndex, int bank, uint8_t value);
     
     void setBank(int bank);
     int getCurrentBank() const { return currentBank; }
-    
-    const std::string& getName() const { return name; }
-    const std::string& getCurrentBankName() const { return bankNames[currentBank]; }
+
+    const char *getName() const { return name; }
+    const char *getCurrentBankName() const { return bankNames[currentBank]; }
+
+    void addBank(const char *bankName, uint8_t bankNote, uint8_t baseCC, int numEncoders);
 
     // Callback: (encoderIndex, bankIndex, value)
     std::function<void(int, int, uint8_t)> onBankedChange;
@@ -32,18 +37,16 @@ public:
     void redraw();
 
 private:
-    APC40Device& device;
-    std::string name;
+    APC40Controller& controller;
+    const char *name;
 
     int numBanks;
-    std::vector<uint8_t> bankButtons;
-    std::vector<std::string> bankNames;
+    const char* const* bankNames;
 
-    std::vector<std::vector<uint8_t>> bankValues; // Stores the values for each bank
+    GenericList<APCControl*> *bankButtons;
+    GenericList<GenericList<APCControl*>*> *bankEncoders;
 
     uint8_t baseCC;
     int numEncoders;
-
     int currentBank = 0;
-
 };
