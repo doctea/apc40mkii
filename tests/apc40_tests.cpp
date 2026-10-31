@@ -1,5 +1,6 @@
 #include "APC40BankSet.h"
 #include "APC40Controller.h"
+#include "APC40ParameterInputs.h"
 
 #include <iostream>
 #include <sstream>
@@ -39,9 +40,8 @@ public:
         return true;
     }
 
-    void receive(Message message) {
-        if (connected && onMessage)
-            onMessage(message.data(), message.size());
+    bool receive(Message message) {
+        return connected && onMessage && onMessage(message.data(), message.size());
     }
 };
 
@@ -396,6 +396,17 @@ void testLogicalTrackKnobAPI() {
         !controller.setTrackKnobState(APC40TrackKnobBank::Pan, 8, panState),
         "Invalid logical knob address was accepted");
 
+    require(std::string(APC40Controller::getTrackKnobBankName(APC40TrackKnobBank::Sends)) == "Sends" &&
+        std::string(APC40Controller::getTrackKnobGroupName(APC40TrackKnobBank::Pan)) == "APC40 Pan" &&
+        std::string(APC40Controller::getTrackKnobName(APC40TrackKnobBank::User, 7)) == "UserKnob8" &&
+        std::string(APC40Controller::getTrackFaderName(7)) == "TrackFader8",
+        "Logical control names changed");
+    require(!APC40Controller::getTrackKnobBankName(static_cast<APC40TrackKnobBank>(3)) &&
+        !APC40Controller::getTrackKnobGroupName(static_cast<APC40TrackKnobBank>(3)) &&
+        !APC40Controller::getTrackKnobName(static_cast<APC40TrackKnobBank>(3), 0) &&
+        !APC40Controller::getTrackKnobName(APC40TrackKnobBank::Pan, 8) &&
+        !APC40Controller::getTrackFaderName(8), "Invalid logical control name was accepted");
+
     APC40TrackKnobBank changedBank = APC40TrackKnobBank::Pan;
     uint8_t changedTrack = 0;
     uint8_t changedValue = 0;
@@ -453,6 +464,64 @@ void testMessageDecoding() {
     transport.receive({0xF8});
     require(presses == 1 && releases == 2 && changes == 1 && sysex == 1,
         "Malformed message dispatched or valid message lost");
+}
+
+void testControlChangeConsumption() {
+    FakeTransport transport;
+    APC40Controller controller(transport);
+    require(controller.init(), "Controller initialization failed");
+    int observed = 0;
+    controller.device.onControlChange = [&](uint8_t, uint8_t, uint8_t) { ++observed; };
+
+    require(transport.receive({0xB0, 48, 73}), "Stored banked knob was not consumed");
+    require(transport.receive({0xB0, 16, 29}), "Stored device knob was not consumed");
+    require(!transport.receive({0xB1, 48, 99}), "Wrong-channel knob was consumed");
+    require(!transport.receive({0xB0, 100, 99}), "Raw observer consumed an unrelated CC");
+    require(observed == 4, "Raw CC observer was lost or invoked twice");
+    require(!transport.receive({0xB0, 48, 128}) && !transport.receive({0xB0, 48}) &&
+        !transport.receive({}), "Malformed input was consumed");
+    require(observed == 4, "Malformed input reached the raw observer");
+
+    for (uint8_t channel = 0; channel < 8; ++channel) {
+        const FakeTransport::Message fader = {static_cast<uint8_t>(0xB0 | channel), 7, 42};
+        require(!transport.receive(fader), "Unbound track fader was consumed");
+    }
+    require(!transport.receive({0xB0, 14, 42}), "Unbound master fader lost fallback");
+    require(!transport.receive({0xB0, 15, 42}), "Unbound crossfader lost fallback");
+    require(!transport.receive({0xB0, 13, 1}), "Unbound tempo encoder was consumed");
+    require(!transport.receive({0xB0, 47, 1}), "Unbound cue encoder was consumed");
+
+    int faderCalls = 0;
+    controller.onTrackFaderChanged = [&](uint8_t, uint8_t) { ++faderCalls; };
+    for (uint8_t channel = 0; channel < 8; ++channel)
+        require(transport.receive({static_cast<uint8_t>(0xB0 | channel), 7, 42}),
+            "Bound track fader was not consumed");
+    require(faderCalls == 8, "Track fader callbacks ran more than once per event");
+    require(!transport.receive({0xB8, 7, 42}), "Track fader on channel 9 was consumed");
+    controller.onMasterFaderChanged = [](uint8_t) {};
+    controller.onCrossfaderChanged = [](uint8_t) {};
+    controller.onTempoEncoderDelta = [](int16_t) {};
+    controller.onCueEncoderDelta = [](int16_t) {};
+    for (uint8_t cc : {14, 15, 13, 47}) {
+        require(transport.receive({0xB0, cc, 1}), "Bound surface callback was not consumed");
+        require(!transport.receive({0xB1, cc, 1}), "Wrong-channel surface event was consumed");
+    }
+    controller.onCrossfaderChanged = nullptr;
+    require(!transport.receive({0xB0, 15, 42}), "Unbinding crossfader did not restore fallback");
+
+    auto* encoder = new APCControl(APCControlType::Encoder, 100, 2, "Custom");
+    controller.controls.add(encoder);
+    require(transport.receive({0xB2, 100, 55}) && encoder->value == 55,
+        "Registered encoder did not consume and apply its CC");
+    require(!transport.receive({0xB3, 100, 55}), "Wrong-channel registered CC was consumed");
+
+    transport.receive({0x90, APC40MKII::tracks::NOTE_BUTTON_SENDS, 127});
+    require(transport.receive({0xB0, 48, 31}), "Switched bank's knob was not consumed");
+    APC40VirtualEncoderState state;
+    require(controller.getTrackKnobState(APC40TrackKnobBank::Pan, 0, state) && state.value == 73,
+        "Consumed Sends knob changed inactive Pan state");
+    require(controller.getTrackKnobState(APC40TrackKnobBank::Sends, 0, state) && state.value == 31,
+        "Consumed Sends knob did not update selected bank");
 }
 
 void testSysExBounds() {
@@ -539,6 +608,7 @@ int main() {
         {"independent virtual encoder state", testVirtualEncoderState},
         {"logical track knob API", testLogicalTrackKnobAPI},
         {"message decoding and malformed input", testMessageDecoding},
+        {"CC consumption and raw fallback", testControlChangeConsumption},
         {"SysEx lengths and bounds", testSysExBounds},
         {"startup and reconnect state", testConnectionResynchronization},
     };

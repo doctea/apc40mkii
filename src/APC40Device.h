@@ -18,6 +18,7 @@ public:
     std::function<void(uint8_t, uint8_t, uint8_t)> onNoteOn;
     std::function<void(uint8_t, uint8_t, uint8_t)> onNoteOff;
     std::function<void(uint8_t, uint8_t, uint8_t)> onControlChange;
+    std::function<bool(uint8_t, uint8_t, uint8_t)> handleControlChange;
     std::function<void(const uint8_t*, std::size_t)> onSystemExclusive;
     std::function<void(bool)> onConnectionChanged;
 
@@ -25,5 +26,5 @@ public:
 
 private:
     APC40Transport& transport;
-    void receiveMessage(const uint8_t* data, std::size_t size);
+    bool receiveMessage(const uint8_t* data, std::size_t size);
 };

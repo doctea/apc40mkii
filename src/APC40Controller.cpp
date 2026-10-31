@@ -33,28 +33,34 @@ bool APC40Controller::init() {
         }
     };
 
-    device.onControlChange = [&](uint8_t cc, uint8_t channel, uint8_t val) {
-        if (cc == APC40MKII::tracks::CC_FADER && channel < 8 && onTrackFaderChanged)
+    device.handleControlChange = [&](uint8_t cc, uint8_t channel, uint8_t val) {
+        bool handled = true;
+        if (cc == APC40MKII::tracks::CC_FADER && channel < 8 && onTrackFaderChanged) {
             onTrackFaderChanged(channel, val);
-        else if (cc == APC40MKII::tracks::CC_FADER_MASTER && channel == 0 && onMasterFaderChanged)
+        } else if (cc == APC40MKII::tracks::CC_FADER_MASTER && channel == 0 && onMasterFaderChanged) {
             onMasterFaderChanged(val);
-        else if (cc == APC40MKII::CC_CROSSFADER && channel == 0 && onCrossfaderChanged)
+        } else if (cc == APC40MKII::CC_CROSSFADER && channel == 0 && onCrossfaderChanged) {
             onCrossfaderChanged(val);
-        else if (cc == APC40MKII::tempo::CC_TEMPO && channel == 0 && onTempoEncoderDelta)
+        } else if (cc == APC40MKII::tempo::CC_TEMPO && channel == 0 && onTempoEncoderDelta) {
             onTempoEncoderDelta(applyRelativeAcceleration(val, tempoEncoderState));
-        else if (cc == APC40MKII::tracks::CC_CUE_LEVEL && channel == 0 && onCueEncoderDelta)
+        } else if (cc == APC40MKII::tracks::CC_CUE_LEVEL && channel == 0 && onCueEncoderDelta) {
             onCueEncoderDelta(applyRelativeAcceleration(val, cueEncoderState));
+        } else {
+            handled = false;
+        }
 
         for (auto* bs : bank_sets) {
-            bs->handleControlChange(cc, val, channel);
+            handled = bs->handleControlChange(cc, val, channel) || handled;
         }
         
         for (auto* ctrl : controls) {
             if (ctrl == nullptr) continue;
             if (ctrl->type==APCControlType::Encoder && ctrl->midiCC == cc && ctrl->midiChannel == channel) {
                 ctrl->applyAPCEvent(val);
+                handled = true;
             }
         }
+        return handled;
     };
 
     controls.add(new APCControl(APCControlType::Button, APC40MKII::transport::NOTE_BUTTON_PLAY, 0, "Play", true));
@@ -156,9 +162,9 @@ void APC40Controller::setup_banks() {
         APC40MKII::tracks::NOTE_BUTTON_USER 
     };
     static const char* track_labels[] = {
-        "Pan",
-        "Sends",
-        "User"
+        getTrackKnobBankName(APC40TrackKnobBank::Pan),
+        getTrackKnobBankName(APC40TrackKnobBank::Sends),
+        getTrackKnobBankName(APC40TrackKnobBank::User)
     };
     auto* trackKnobs = new APC40BankSet(
         this, "Track Knobs", 3,
@@ -217,6 +223,36 @@ bool APC40Controller::setTrackKnobState(APC40TrackKnobBank bank, uint8_t track,
     if (bankIndex > static_cast<uint8_t>(APC40TrackKnobBank::User) || bank_sets.empty())
         return false;
     return bank_sets[0]->setEncoderState(track, bankIndex, state);
+}
+
+const char* APC40Controller::getTrackKnobBankName(APC40TrackKnobBank bank) {
+    static const char* const names[] = {"Pan", "Sends", "User"};
+    const uint8_t bankIndex = static_cast<uint8_t>(bank);
+    return bankIndex < 3 ? names[bankIndex] : nullptr;
+}
+
+const char* APC40Controller::getTrackKnobGroupName(APC40TrackKnobBank bank) {
+    static const char* const names[] = {"APC40 Pan", "APC40 Sends", "APC40 User"};
+    const uint8_t bankIndex = static_cast<uint8_t>(bank);
+    return bankIndex < 3 ? names[bankIndex] : nullptr;
+}
+
+const char* APC40Controller::getTrackKnobName(APC40TrackKnobBank bank, uint8_t track) {
+    static const char* const names[3][8] = {
+        {"PanKnob1", "PanKnob2", "PanKnob3", "PanKnob4", "PanKnob5", "PanKnob6", "PanKnob7", "PanKnob8"},
+        {"SendsKnob1", "SendsKnob2", "SendsKnob3", "SendsKnob4", "SendsKnob5", "SendsKnob6", "SendsKnob7", "SendsKnob8"},
+        {"UserKnob1", "UserKnob2", "UserKnob3", "UserKnob4", "UserKnob5", "UserKnob6", "UserKnob7", "UserKnob8"}
+    };
+    const uint8_t bankIndex = static_cast<uint8_t>(bank);
+    return bankIndex < 3 && track < 8 ? names[bankIndex][track] : nullptr;
+}
+
+const char* APC40Controller::getTrackFaderName(uint8_t track) {
+    static const char* const names[] = {
+        "TrackFader1", "TrackFader2", "TrackFader3", "TrackFader4",
+        "TrackFader5", "TrackFader6", "TrackFader7", "TrackFader8"
+    };
+    return track < 8 ? names[track] : nullptr;
 }
 
 APCControl* APC40Controller::bind_cc(uint8_t cc, uint8_t channel) {

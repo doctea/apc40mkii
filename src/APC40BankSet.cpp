@@ -81,13 +81,13 @@ void APC40BankSet::handleButton(uint8_t note, uint8_t vel, uint8_t channel) {
     }
 }
 
-void APC40BankSet::handleControlChange(uint8_t cc, uint8_t value, uint8_t channel) {
+bool APC40BankSet::handleControlChange(uint8_t cc, uint8_t value, uint8_t channel) {
     if (channel != 0)
-        return;
+        return false;
 
     int idx = cc - baseCC;
     if (idx < 0 || idx >= numEncoders)
-        return;
+        return false;
 
     // set the value for the current bank and encoder
     GenericList<APCControl*> *encoders = (*bankEncoders)[currentBank];
@@ -97,6 +97,7 @@ void APC40BankSet::handleControlChange(uint8_t cc, uint8_t value, uint8_t channe
 
     if (onBankedChange)
         onBankedChange(idx, currentBank, value);
+    return true;
 }
 
 void APC40BankSet::setEncoderValue(int encoderIndex, int bank, uint8_t value) {

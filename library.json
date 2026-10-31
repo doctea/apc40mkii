@@ -1,6 +1,6 @@
 {
   "name": "apc40mkii",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "APC40 MkII controller and portable MIDI core",
   "keywords": [
     "midi",

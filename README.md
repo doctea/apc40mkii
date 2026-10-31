@@ -70,13 +70,16 @@ cmake --build build-tests --config Debug --target apc40_tests
 cmake -E chdir build-tests ctest -C Debug -R apc40_native --output-on-failure
 ```
 
-The 13-case suite covers bank selection, releases, invalid bank indices,
+The 14-case suite covers bank selection, releases, invalid bank indices,
 independent bank values, recalled ring feedback, MIDI channel filtering,
 outgoing MIDI bytes, and application-driven updates without callback echo. It
 also covers malformed MIDI, note-on-zero releases, bounded seven-bit SysEx
 encoding, introduction ordering, simulated reconnection, signed relative
 encoder boundaries, fader routing, and the logical API for all 24 track-knob
-slots.
+slots. CC consumption tests cover bound/unbound callbacks, wrong channels,
+registered controls, raw observers, and bank storage. Stable names and invalid
+name lookups are checked with the optional parameter adapter disabled, without
+Arduino or parameters headers.
 
 ## Banked Controls
 
@@ -148,6 +151,12 @@ polarity, and ring mode, and `onTrackKnobChanged(bank, track, value)` for
 physical turns. This API does not require applications to know the APC's CC
 numbers or bank-button notes.
 
+Library-owned labels are available through `getTrackKnobBankName(bank)`,
+`getTrackKnobGroupName(bank)`, `getTrackKnobName(bank, track)`, and
+`getTrackFaderName(track)`. These static controller methods return borrowed,
+static strings, or `nullptr` for invalid indices. They preserve the existing
+Nexus6 labels such as `APC40 Pan`, `PanKnob1`, and `TrackFader1`.
+
 ## Transport Contract
 
 Implement `APC40Transport` to use another backend. The controller borrows the
@@ -162,7 +171,8 @@ controller is destroyed. One device exclusively owns the transport callbacks.
   `true` even when the same physical device returns.
 - Deliver complete MIDI messages through `onMessage(data, size)`, not individual
   USB packets or running-status fragments. The data need only remain valid
-  until the callback returns.
+  until the callback returns. Its callback now returns `bool`; transport
+  backends may ignore the result unless they need a fallback receive path.
 - `sendMessage(data, size)` must consume or copy the bytes before returning.
   The core passes temporary stack buffers. Return `false` on failure.
 - Deliver callbacks on the application thread, normally from `poll()` invoked
@@ -180,6 +190,33 @@ use `(number, value, channel)`. Channels are zero-based. Note-on velocity zero
 is normalized to `onNoteOff`. Short or invalid channel messages are ignored.
 The core accepts complete SysEx through `onSystemExclusive`; it does not yet
 interpret device identity or the introduction response.
+
+For CC messages, `onMessage` returns `true` when the controller stores a banked
+value, applies a matching registered encoder, or invokes a bound surface
+callback. It returns `false` for unhandled or malformed messages. A recognized
+fader or relative-encoder CC is not consumed without a bound callback; for
+example, unbound master and crossfaders can still reach normal MIDI CC inputs.
+This decision is made during normal processing, without a second lookup.
+For notes and SysEx, `true` means the corresponding device callback was invoked;
+it does not provide per-control note-consumption tracking.
+
+The controller installs `APC40Device::handleControlChange` as the consuming
+handler. `onControlChange` remains a void raw observer, called once after that
+handler for each valid CC; observing a message does not consume it. Custom
+transport `onMessage` callbacks must now return a boolean, while existing
+void device observers need no changes. An application that bridges another
+MIDI API can return the transport callback's result and use it for fallback:
+
+```cpp
+const bool handled = transport.receiveMidiMessage(0xB0, channel, number, value);
+if (!handled) {
+  MIDI_CC_Source::update_parameter_inputs_cc(number, value, channel);
+}
+```
+
+Here `receiveMidiMessage` is an application transport helper, not a core method.
+The Nexus6 USBHost helper also converts one-based USBHost channels to the core's
+zero-based MIDI channels.
 
 When a transport reports reconnection, the controller sends the introduction,
 restores selected banks and their values, and redraws registered control state.
@@ -203,6 +240,41 @@ The core still depends on foundling's `GenericList` and allocates its controls
 and banks during setup. Cleanup and explicit allocation ownership must be
 completed before dynamic bank creation/removal is supported.
 
-Parameter range conversion belongs in the optional adapter, not the transport.
-Nexus6, `parameters`, and storage are not dependencies of the core and were not
-changed by this first implementation step.
+Nexus6, `parameters`, and storage are not dependencies of the portable core.
+
+### Optional Parameter Inputs
+
+Applications using the `parameters` library can opt into the header-only
+`APC40ParameterInputs.h` adapter. Define `APC40_ENABLE_PARAMETERS` to `1` before
+including that header (or via build flags):
+
+```cpp
+#define APC40_ENABLE_PARAMETERS 1
+#include <APC40ParameterInputs.h>
+
+// After apc.setup_banks() or apc.init():
+APC40LogicalKnobParameterInput pan(apc, APC40TrackKnobBank::Pan, 0);
+APC40CueKnobParameterInput cue((char *)"CueKnob", "APC40");
+
+// In application startup:
+// apc.onCueEncoderDelta = [&](int16_t delta) { cue.apply_delta(delta); };
+```
+
+Without that flag, the header exposes no adapter classes and includes neither
+Arduino nor parameters headers. It is never included by the core. Enabling the
+adapter requires Arduino and the consuming project's existing `parameters`
+dependency; it does not register inputs or add a storage dependency itself.
+
+`APC40LogicalKnobParameterInput` reads/writes the controller's independent bank
+state instead of claiming a raw MIDI CC identity. Its default constructor labels
+come from the core; the original explicit `(name, group, controller, bank, track)`
+constructor is also supported. Values clamp to 0-127. It supports unipolar and
+bipolar normalization and uses automatic ring modes; run its `loop()` when
+changing `input_type` to synchronize polarity without redundant feedback.
+
+`APC40CueKnobParameterInput` retains a clamped accumulated value updated by
+`apply_delta()`. It deliberately ignores direct raw CC delivery so relative
+events cannot overwrite its state. Input registration, callback binding, BPM
+policy, and persistence remain application responsibilities. Nexus6's existing
+native adapter test checks these classes with mocked USB hardware and the real
+core, including CC fallback and retained ring/value state after reconnect.

@@ -55,6 +55,11 @@ public:
     bool setTrackKnobState(APC40TrackKnobBank bank, uint8_t track,
         const APC40VirtualEncoderState& state);
 
+    static const char* getTrackKnobBankName(APC40TrackKnobBank bank);
+    static const char* getTrackKnobGroupName(APC40TrackKnobBank bank);
+    static const char* getTrackKnobName(APC40TrackKnobBank bank, uint8_t track);
+    static const char* getTrackFaderName(uint8_t track);
+
     APC40Device device;
     APC40Feedback feedback;
     

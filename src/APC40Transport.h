@@ -13,6 +13,6 @@ public:
     virtual bool sendMessage(const uint8_t* data, std::size_t size) = 0;
     virtual void poll() {}
 
-    std::function<void(const uint8_t*, std::size_t)> onMessage;
+    std::function<bool(const uint8_t*, std::size_t)> onMessage;
     std::function<void(bool)> onConnectionChanged;
 };

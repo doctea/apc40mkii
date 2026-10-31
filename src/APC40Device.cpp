@@ -2,7 +2,7 @@
 
 APC40Device::APC40Device(APC40Transport& transport) : transport(transport) {
     transport.onMessage = [this](const uint8_t* data, std::size_t size) {
-        receiveMessage(data, size);
+        return receiveMessage(data, size);
     };
     transport.onConnectionChanged = [this](bool connected) {
         if (onConnectionChanged)
@@ -27,31 +27,40 @@ void APC40Device::loop() {
     transport.poll();
 }
 
-void APC40Device::receiveMessage(const uint8_t* data, std::size_t size) {
+bool APC40Device::receiveMessage(const uint8_t* data, std::size_t size) {
     if (!data || size == 0)
-        return;
+        return false;
 
     if (data[0] == 0xF0) {
-        if (size >= 2 && data[size - 1] == 0xF7 && onSystemExclusive)
+        if (size >= 2 && data[size - 1] == 0xF7 && onSystemExclusive) {
             onSystemExclusive(data, size);
-        return;
+            return true;
+        }
+        return false;
     }
 
     if (size != 3 || data[1] > 127 || data[2] > 127)
-        return;
+        return false;
 
     const uint8_t status = data[0] & 0xF0;
     const uint8_t channel = data[0] & 0x0F;
     if (status == 0x80 || (status == 0x90 && data[2] == 0)) {
-        if (onNoteOff)
+        if (onNoteOff) {
             onNoteOff(data[1], channel, data[2]);
+            return true;
+        }
     } else if (status == 0x90) {
-        if (onNoteOn)
+        if (onNoteOn) {
             onNoteOn(data[1], channel, data[2]);
+            return true;
+        }
     } else if (status == 0xB0) {
+        const bool handled = handleControlChange && handleControlChange(data[1], channel, data[2]);
         if (onControlChange)
             onControlChange(data[1], channel, data[2]);
+        return handled;
     }
+    return false;
 }
 
 void APC40Device::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
