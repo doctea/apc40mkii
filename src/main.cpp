@@ -1,3 +1,4 @@
+#include "APC40Constants.h"
 #include "APC40Controller.h"
 #include "APC40RtMidiTransport.h"
 #include "example_app.h"
@@ -5,7 +6,6 @@
 #include <thread>
 #include <chrono>
 
-#include "constants.h"
 
 int main() {
     APC40RtMidiTransport transport;

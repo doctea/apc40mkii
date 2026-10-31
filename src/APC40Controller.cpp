@@ -1,7 +1,7 @@
 #include "APC40Controller.h"
 #include "APC40BankSet.h"
 
-#include "constants.h"
+#include "APC40Constants.h"
 
 APC40Controller::APC40Controller(APC40Transport& transport,
         APC40MKII::sysex::APPLICATION_MODES mode)

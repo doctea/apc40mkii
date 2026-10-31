@@ -1,12 +1,12 @@
-#pragma once
+// #pragma once
 
-#include "constants.h"
+// #include "constants.h"
 
-struct APC40Events {
-    enum type {
-        NOTE_ON,
-        NOTE_OFF,
-        CONTROL_CHANGE
-    };
-    bool shifted = false;
-};
+// struct APC40Events {
+//     enum type {
+//         NOTE_ON,
+//         NOTE_OFF,
+//         CONTROL_CHANGE
+//     };
+//     bool shifted = false;
+// };
