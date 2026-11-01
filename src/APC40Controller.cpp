@@ -1,6 +1,5 @@
 #include "APC40Controller.h"
 #include "APC40BankSet.h"
-
 #include "APC40Constants.h"
 
 APC40Controller::APC40Controller(APC40Transport& transport,
@@ -20,37 +19,92 @@ bool APC40Controller::init() {
     }
 
     device.onNoteOn = [&](uint8_t note, uint8_t channel, uint8_t vel) {
+        if (handleTransportButton(note, channel, vel))
+            return;
+
         for (auto *bs : bank_sets) {
             bs->handleButton(note, vel, channel);
         }
 
         for (auto* ctrl : controls) {
             if (ctrl == nullptr) continue;
-            if (ctrl->type == APCControlType::Button && ctrl->midiNote == note && ctrl->midiChannel == channel) {
+            if (
+                ctrl->type == APCControlType::Button
+                && ctrl->midiNote == note
+                && ctrl->midiChannel == channel
+            ) {
                 ctrl->applyAPCEvent(vel);
                 redraw(ctrl);
             }
         }
     };
 
+    device.onNoteOff = [this](uint8_t note, uint8_t channel, uint8_t) {
+        handleTransportButton(note, channel, 0);
+    };
+
     device.handleControlChange = [&](uint8_t cc, uint8_t channel, uint8_t val) {
-        bool handled = true;
-        if (cc == APC40MKII::tracks::CC_FADER && channel < 8 && onTrackFaderChanged) {
-            onTrackFaderChanged(channel, val);
-        } else if (cc == APC40MKII::tracks::CC_FADER_MASTER && channel == 0 && onMasterFaderChanged) {
-            onMasterFaderChanged(val);
-        } else if (cc == APC40MKII::CC_CROSSFADER && channel == 0 && onCrossfaderChanged) {
-            onCrossfaderChanged(val);
+        bool handled = false;
+        #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+            APC40ControlId candidate;
+        #endif
+
+        if (cc == APC40MKII::tracks::CC_FADER && channel < 8) {
+            if (onTrackFaderChanged) {
+                onTrackFaderChanged(channel, val);
+                handled = true;
+            }
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                candidate = {APC40ControlKind::TrackFader, 0, channel};
+            #endif
+        } else if (cc == APC40MKII::tracks::CC_FADER_MASTER && channel == 0) {
+            if (onMasterFaderChanged) {
+                onMasterFaderChanged(val);
+                handled = true;
+            }
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                candidate = {APC40ControlKind::MasterFader, 0, 0};
+            #endif
+        } else if (cc == APC40MKII::CC_CROSSFADER && channel == 0) {
+            if (onCrossfaderChanged) {
+                onCrossfaderChanged(val);
+                handled = true;
+            }
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                candidate = {APC40ControlKind::Crossfader, 0, 0};
+            #endif
         } else if (cc == APC40MKII::tempo::CC_TEMPO && channel == 0 && onTempoEncoderDelta) {
             onTempoEncoderDelta(applyRelativeAcceleration(val, tempoEncoderState));
-        } else if (cc == APC40MKII::tracks::CC_CUE_LEVEL && channel == 0 && onCueEncoderDelta) {
-            onCueEncoderDelta(applyRelativeAcceleration(val, cueEncoderState));
-        } else {
-            handled = false;
+            handled = true;
+        } else if (cc == APC40MKII::tracks::CC_CUE_LEVEL && channel == 0) {
+            if (onCueEncoderDelta) {
+                onCueEncoderDelta(applyRelativeAcceleration(val, cueEncoderState));
+                handled = true;
+            }
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                if (val != 0)
+                    candidate = {APC40ControlKind::CueEncoder, 0, 0};
+            #endif
         }
 
         for (auto* bs : bank_sets) {
-            handled = bs->handleControlChange(cc, val, channel) || handled;
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                const uint8_t inputBank = static_cast<uint8_t>(bs->getCurrentBank());
+            #endif
+            if (!bs->handleControlChange(cc, val, channel))
+                continue;
+            handled = true;
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                if (bs == bank_sets[0]) {
+                    candidate = {APC40ControlKind::TrackKnob,
+                        inputBank,
+                        static_cast<uint8_t>(cc - APC40MKII::tracks::CC_KNOB_1)};
+                } else if (bank_sets.size() > 1 && bs == bank_sets[1]) {
+                    candidate = {APC40ControlKind::DeviceKnob,
+                        inputBank,
+                        static_cast<uint8_t>(cc - APC40MKII::device::CC_KNOB_1)};
+                }
+            #endif
         }
         
         for (auto* ctrl : controls) {
@@ -60,17 +114,32 @@ bool APC40Controller::init() {
                 handled = true;
             }
         }
+        #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+            proposeLearnCandidate({candidate, APC40InputPhase::Change, val});
+        #endif
         return handled;
     };
 
-    controls.add(new APCControl(APCControlType::Button, APC40MKII::transport::NOTE_BUTTON_PLAY, 0, "Play", true));
-    controls.add(new APCControl(APCControlType::Button, APC40MKII::transport::NOTE_BUTTON_RECORD, 0, "Record", true));
-    controls.add(new APCControl(APCControlType::Button, APC40MKII::transport::NOTE_BUTTON_SESSION, 0, "Session", true));
+    transportButtons[0].control = new APCControl(APCControlType::Button, APC40MKII::transport::NOTE_BUTTON_PLAY, 0, "Play", true);
+    transportButtons[1].control = new APCControl(APCControlType::Button, APC40MKII::transport::NOTE_BUTTON_RECORD, 0, "Record", true);
+    transportButtons[2].control = new APCControl(APCControlType::Button, APC40MKII::transport::NOTE_BUTTON_SESSION, 0, "Session", true);
+    for (auto& button : transportButtons) {
+        button.control->setAppValue(button.initialState ? 1.0f : 0.0f);
+        controls.add(button.control);
+    }
 
     setup_banks();
 
     device.onConnectionChanged = [this](bool connected) {
         synchronized = false;
+        for (auto& button : transportButtons) {
+            button.pressed = false;
+            button.hasSentState = false;
+        }
+        #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+            if (!connected)
+                setMIDILearnDeviceState(false);
+        #endif
         if (connected)
             synchronize();
     };
@@ -97,6 +166,67 @@ void APC40Controller::synchronize() {
 
 void APC40Controller::loop() {
     device.loop();
+    #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+        updateMidiLearnState();
+    #endif
+    for (auto& button : transportButtons) {
+        if (button.control)
+            redraw(button.control);
+    }
+}
+
+void APC40Controller::setPlayState(bool active) {
+    setTransportButtonState(0, active);
+}
+
+void APC40Controller::setRecordState(bool active) {
+    setTransportButtonState(1, active);
+}
+
+void APC40Controller::setSessionState(bool active) {
+    sessionState = active;
+    #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+        if (midiLearnHostState)
+            return;
+    #endif
+    setTransportButtonState(2, active);
+}
+
+void APC40Controller::setTransportButtonState(uint8_t index, bool active) {
+    auto& button = transportButtons[index];
+    if (!button.control) {
+        button.initialState = active;
+        return;
+    }
+    if ((button.control->value > 0.0f) != active)
+        button.control->setAppValue(active ? 1.0f : 0.0f);
+    redraw(button.control);
+}
+
+bool APC40Controller::handleTransportButton(uint8_t note, uint8_t channel, uint8_t velocity) {
+    for (uint8_t index = 0; index < 3; ++index) {
+        auto& button = transportButtons[index];
+        if (!button.control || button.control->midiNote != note || button.control->midiChannel != channel)
+            continue;
+        const bool pressed = velocity > 0;
+        if (button.pressed == pressed)
+            return true;
+        button.pressed = pressed;
+        if (pressed) {
+            auto& callback = index == 0 ? onPlayPressed : index == 1 ? onRecordPressed : onSessionPressed;
+            if (callback)
+                callback();
+            else if (button.control->onAPCValueChanged)
+                button.control->onAPCValueChanged(velocity);
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                else if (index == 2)
+                    setMIDILearnDeviceState(!midiLearnDeviceState);
+            #endif
+            redraw(button.control);
+        }
+        return true;
+    }
+    return false;
 }
 
 void APC40Controller::setMillisProvider(std::function<uint32_t()> provider) {
@@ -131,9 +261,27 @@ int16_t APC40Controller::applyRelativeAcceleration(uint8_t value, RelativeEncode
 
 void APC40Controller::redraw(APCControl* ctrl) {
     // Implement the logic to update the APC40 MkII hardware based on the control's state
+    // @@TODO: we should ensure that this only sends updates if necessary (value has changed, or device has reconnected)
     if (ctrl->type==APCControlType::Button) {
         // Update the LED state for the button
         if (ctrl->hasLED) {
+            for (auto& button : transportButtons) {
+                if (button.control != ctrl)
+                    continue;
+                const bool active = ctrl->value > 0.0f;
+                const uint8_t velocity = active ? ctrl->ledOn : ctrl->ledOff;
+                if (button.hasSentState && button.sentState == active && button.sentVelocity == velocity)
+                    return;
+                const bool sent = active
+                    ? device.sendNoteOn(ctrl->midiNote, velocity, ctrl->midiChannel)
+                    : device.sendNoteOff(ctrl->midiNote, velocity, ctrl->midiChannel);
+                if (sent) {
+                    button.hasSentState = true;
+                    button.sentState = active;
+                    button.sentVelocity = velocity;
+                }
+                return;
+            }
             if (ctrl->value > 0.0f)
                 device.sendNoteOn(ctrl->midiNote, ctrl->ledOn, ctrl->midiChannel);
             else
@@ -225,6 +373,22 @@ bool APC40Controller::setTrackKnobState(APC40TrackKnobBank bank, uint8_t track,
     return bank_sets[0]->setEncoderState(track, bankIndex, state);
 }
 
+bool APC40Controller::getKnobState(APC40ControlId control, APC40VirtualEncoderState& state) const {
+    const int bankSetIndex = control.kind == APC40ControlKind::TrackKnob ? 0 :
+        control.kind == APC40ControlKind::DeviceKnob ? 1 : -1;
+    if (bankSetIndex < 0 || bankSetIndex >= static_cast<int>(bank_sets.size()))
+        return false;
+    return bank_sets[bankSetIndex]->getEncoderState(control.index, control.bank, state);
+}
+
+bool APC40Controller::setKnobState(APC40ControlId control, const APC40VirtualEncoderState& state) {
+    const int bankSetIndex = control.kind == APC40ControlKind::TrackKnob ? 0 :
+        control.kind == APC40ControlKind::DeviceKnob ? 1 : -1;
+    if (bankSetIndex < 0 || bankSetIndex >= static_cast<int>(bank_sets.size()))
+        return false;
+    return bank_sets[bankSetIndex]->setEncoderState(control.index, control.bank, state);
+}
+
 const char* APC40Controller::getTrackKnobBankName(APC40TrackKnobBank bank) {
     static const char* const names[] = {"Pan", "Sends", "User"};
     const uint8_t bankIndex = static_cast<uint8_t>(bank);
@@ -277,3 +441,46 @@ APCControl* APC40Controller::find_control(uint8_t note, uint8_t channel, APCCont
     return nullptr;
 }
 
+#ifdef ENABLE_PARAMETERS_MIDI_LEARN
+    void APC40Controller::setMIDILearnHostState(bool state) {
+        if (midiLearnHostState == state)
+            return;
+        midiLearnHostState = state;
+        if (!state)
+            midiLearnDeviceState = false;
+        midiLearnBlinkStart = millisProvider ? millisProvider() : 0;
+        updateMidiLearnState();
+    }
+    void APC40Controller::setMIDILearnDeviceState(bool state) {
+        state = state && midiLearnHostState && device.isConnected();
+        if (midiLearnDeviceState == state)
+            return;
+        midiLearnDeviceState = state;
+        midiLearnBlinkStart = millisProvider ? millisProvider() : 0;
+        updateMidiLearnState();
+    }
+    void APC40Controller::updateMidiLearnState() {
+        bool active = sessionState;
+        if (midiLearnHostState)
+            active = !midiLearnDeviceState || !millisProvider ||
+                ((static_cast<uint32_t>(millisProvider() - midiLearnBlinkStart) / 250) % 2 == 0);
+        setTransportButtonState(2, active);
+    }
+    MIDILearnState APC40Controller::getMidiLearnState() const {
+        if (midiLearnHostState && midiLearnDeviceState) {
+            return MIDILearnState::Active;
+        } else if (midiLearnHostState) {
+            return MIDILearnState::Pending;
+        } else {
+            return MIDILearnState::Inactive;
+        }
+    }
+    void APC40Controller::proposeLearnCandidate(const APC40ControlEvent& event) {
+        if (getMidiLearnState() != MIDILearnState::Active || !onLearnCandidate ||
+                event.control.kind == APC40ControlKind::Unknown ||
+                event.phase == APC40InputPhase::Release)
+            return;
+        if (onLearnCandidate(event))
+            setMIDILearnDeviceState(false);
+    }
+#endif

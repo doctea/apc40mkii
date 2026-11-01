@@ -63,18 +63,18 @@ bool APC40Device::receiveMessage(const uint8_t* data, std::size_t size) {
     return false;
 }
 
-void APC40Device::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
+bool APC40Device::sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel) {
     if (!isConnected() || note > 127 || velocity > 127 || channel > 15)
-        return;
+        return false;
     const uint8_t message[] = {static_cast<uint8_t>(0x90 | channel), note, velocity};
-    transport.sendMessage(message, sizeof(message));
+    return transport.sendMessage(message, sizeof(message));
 }
 
-void APC40Device::sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) {
+bool APC40Device::sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel) {
     if (!isConnected() || note > 127 || velocity > 127 || channel > 15)
-        return;
+        return false;
     const uint8_t message[] = {static_cast<uint8_t>(0x80 | channel), note, velocity};
-    transport.sendMessage(message, sizeof(message));
+    return transport.sendMessage(message, sizeof(message));
 }
 
 void APC40Device::sendCC(uint8_t cc, uint8_t value, uint8_t channel) {

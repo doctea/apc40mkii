@@ -8,13 +8,17 @@
 class APC40LogicalKnobParameterInput : public MIDIParameterInputBase {
     private:
         APC40Controller &controller;
-        const APC40TrackKnobBank bank;
-        const uint8_t track;
+        const APC40ControlId control;
 
     public:
         APC40LogicalKnobParameterInput(char *name, const char *group_name,
                 APC40Controller &controller, APC40TrackKnobBank bank, uint8_t track)
-            : MIDIParameterInputBase(name, group_name), controller(controller), bank(bank), track(track) {
+            : APC40LogicalKnobParameterInput(name, group_name, controller,
+                APC40ControlId{APC40ControlKind::TrackKnob, static_cast<uint8_t>(bank), track}) {}
+
+        APC40LogicalKnobParameterInput(char *name, const char *group_name,
+                APC40Controller &controller, APC40ControlId control)
+            : MIDIParameterInputBase(name, group_name), controller(controller), control(control) {
             this->loop();
         }
 
@@ -26,17 +30,18 @@ class APC40LogicalKnobParameterInput : public MIDIParameterInputBase {
                     ? APC40Controller::getTrackKnobGroupName(bank) : "APC40",
                 controller, bank, track) {}
 
-        APC40TrackKnobBank get_bank() const { return this->bank; }
-        uint8_t get_track() const { return this->track; }
+        APC40TrackKnobBank get_bank() const { return static_cast<APC40TrackKnobBank>(this->control.bank); }
+        uint8_t get_track() const { return this->control.index; }
+        APC40ControlId get_control_id() const { return this->control; }
 
         uint8_t get_value() const {
             APC40VirtualEncoderState state;
-            return this->controller.getTrackKnobState(this->bank, this->track, state) ? state.value : 0;
+            return this->controller.getKnobState(this->control, state) ? state.value : 0;
         }
 
         bool set_value(uint8_t value) {
             APC40VirtualEncoderState state;
-            if (!this->controller.getTrackKnobState(this->bank, this->track, state)) {
+            if (!this->controller.getKnobState(this->control, state)) {
                 return false;
             }
             value = value > 127 ? 127 : value;
@@ -49,7 +54,7 @@ class APC40LogicalKnobParameterInput : public MIDIParameterInputBase {
             state.value = value;
             state.polarity = polarity;
             state.ringMode = APC40EncoderRingMode::Automatic;
-            return this->controller.setTrackKnobState(this->bank, this->track, state);
+            return this->controller.setKnobState(this->control, state);
         }
 
         virtual void loop() override {
@@ -87,9 +92,15 @@ class APC40LogicalKnobParameterInput : public MIDIParameterInputBase {
 
         virtual const char *getInputInfo() override {
             static char input_info[24];
-            const char *bank_name = APC40Controller::getTrackKnobBankName(this->bank);
-            snprintf(input_info, sizeof(input_info), "%s knob %u", bank_name ? bank_name : "Unknown",
-                static_cast<unsigned>(this->track + 1));
+            if (this->control.kind == APC40ControlKind::DeviceKnob) {
+                snprintf(input_info, sizeof(input_info), "Device %u knob %u",
+                    static_cast<unsigned>(this->control.bank + 1),
+                    static_cast<unsigned>(this->control.index + 1));
+            } else {
+                const char *bank_name = APC40Controller::getTrackKnobBankName(this->get_bank());
+                snprintf(input_info, sizeof(input_info), "%s knob %u", bank_name ? bank_name : "Unknown",
+                    static_cast<unsigned>(this->control.index + 1));
+            }
             return input_info;
         }
 };
@@ -110,6 +121,50 @@ class APC40CueKnobParameterInput : public MIDICCParameterInput {
 
         virtual const char *getInputInfo() override {
             return "APC40 relative Cue";
+        }
+};
+
+class APC40ParameterInputMap {
+    private:
+        static constexpr int deviceKnobOffset = 3 * 8;
+        static constexpr int trackFaderOffset = deviceKnobOffset + 8 * 8;
+        static constexpr int masterFaderOffset = trackFaderOffset + 8;
+        static constexpr int crossfaderOffset = masterFaderOffset + 1;
+        static constexpr int cueEncoderOffset = crossfaderOffset + 1;
+        BaseParameterInput *inputs[cueEncoderOffset + 1] = {};
+
+        static int slotFor(APC40ControlId control) {
+            switch (control.kind) {
+                case APC40ControlKind::TrackKnob:
+                    return control.bank < 3 && control.index < 8 ? control.bank * 8 + control.index : -1;
+                case APC40ControlKind::DeviceKnob:
+                    return control.bank < 8 && control.index < 8
+                        ? deviceKnobOffset + control.bank * 8 + control.index : -1;
+                case APC40ControlKind::TrackFader:
+                    return control.bank == 0 && control.index < 8 ? trackFaderOffset + control.index : -1;
+                case APC40ControlKind::MasterFader:
+                    return control.bank == 0 && control.index == 0 ? masterFaderOffset : -1;
+                case APC40ControlKind::Crossfader:
+                    return control.bank == 0 && control.index == 0 ? crossfaderOffset : -1;
+                case APC40ControlKind::CueEncoder:
+                    return control.bank == 0 && control.index == 0 ? cueEncoderOffset : -1;
+                default:
+                    return -1;
+            }
+        }
+
+    public:
+        bool bind(APC40ControlId control, BaseParameterInput *input) {
+            const int slot = slotFor(control);
+            if (slot < 0)
+                return false;
+            inputs[slot] = input;
+            return true;
+        }
+
+        BaseParameterInput *resolve(APC40ControlId control) const {
+            const int slot = slotFor(control);
+            return slot < 0 ? nullptr : inputs[slot];
         }
 };
 

@@ -11,8 +11,8 @@ public:
     bool open();
     bool isConnected() const;
     void loop();
-    void sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel);
-    void sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel);
+    bool sendNoteOn(uint8_t note, uint8_t velocity, uint8_t channel);
+    bool sendNoteOff(uint8_t note, uint8_t velocity, uint8_t channel);
     void sendCC(uint8_t cc, uint8_t value, uint8_t channel);
 
     std::function<void(uint8_t, uint8_t, uint8_t)> onNoteOn;

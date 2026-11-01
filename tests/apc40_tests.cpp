@@ -13,6 +13,7 @@ public:
     using Message = std::vector<uint8_t>;
     std::vector<Message> sent;
     bool connected = false;
+    bool failSend = false;
 
     bool open() override {
         if (!connected) {
@@ -34,7 +35,7 @@ public:
     bool isConnected() const override { return connected; }
 
     bool sendMessage(const uint8_t* data, std::size_t size) override {
-        if (!connected)
+        if (!connected || failSend)
             return false;
         sent.emplace_back(data, data + size);
         return true;
@@ -524,6 +525,105 @@ void testControlChangeConsumption() {
         "Consumed Sends knob did not update selected bank");
 }
 
+void testTransportButtonState() {
+    FakeTransport transport;
+    APC40Controller controller(transport);
+    controller.setPlayState(true);
+    controller.setRecordState(true);
+    controller.setSessionState(true);
+    int playPresses = 0;
+    int recordPresses = 0;
+    int sessionPresses = 0;
+    controller.onPlayPressed = [&] { ++playPresses; };
+    controller.onRecordPressed = [&] { ++recordPresses; };
+    controller.onSessionPressed = [&] { ++sessionPresses; };
+    require(controller.init(), "Controller initialization failed");
+    auto* play = controller.bind_note(APC40MKII::transport::NOTE_BUTTON_PLAY, 0);
+    auto* record = controller.bind_note(APC40MKII::transport::NOTE_BUTTON_RECORD, 0);
+    auto* session = controller.bind_note(APC40MKII::transport::NOTE_BUTTON_SESSION, 0);
+    require(play->value == 1 && record->value == 1 && session->value == 1,
+        "Pre-initialization button state was lost");
+    require(playPresses == 0 && recordPresses == 0 && sessionPresses == 0,
+        "Initial LED synchronization triggered actions");
+    int legacyPresses = 0;
+    play->onAPCValueChanged = [&](float) {
+        ++legacyPresses;
+        controller.setPlayState(false);
+    };
+    transport.sent.clear();
+    controller.setPlayState(true);
+    controller.setRecordState(true);
+    controller.setSessionState(true);
+    controller.loop();
+    require(transport.sent.empty(), "Unchanged button state sent redundant feedback");
+
+    transport.receive({0x91, 91, 127});
+    require(playPresses == 0, "Wrong-channel Play triggered an action");
+    transport.receive({0x90, 91, 127});
+    transport.receive({0x90, 91, 1});
+    require(playPresses == 1 && play->value == 1 && transport.sent.empty(),
+        "A held Play press repeated or overwrote application state");
+    transport.receive({0x81, 91, 127});
+    transport.receive({0x90, 91, 127});
+    require(playPresses == 1, "Wrong-channel release cleared held Play");
+    transport.receive({0x80, 91, 127});
+    require(playPresses == 1 && play->value == 1, "Nonzero release changed Play state");
+    transport.receive({0x90, 91, 127});
+    require(playPresses == 2, "Release did not rearm Play");
+    transport.receive({0x90, 91, 0});
+    transport.receive({0x90, 91, 127});
+    require(playPresses == 3, "Note-on-zero release did not rearm Play");
+
+    transport.receive({0x90, 93, 127});
+    transport.receive({0x90, 102, 127});
+    require(recordPresses == 1 && sessionPresses == 1 && record->value == 1 && session->value == 1,
+        "Record/Session presses changed desired state or missed callbacks");
+    controller.setPlayState(false);
+    controller.setRecordState(false);
+    controller.setSessionState(false);
+    expectMessage(transport, 0, {0x80, 91, 0});
+    expectMessage(transport, 1, {0x80, 93, 0});
+    expectMessage(transport, 2, {0x80, 102, 0});
+    require(playPresses == 3 && recordPresses == 1 && sessionPresses == 1,
+        "Software LED changes triggered actions");
+
+    transport.close();
+    controller.setPlayState(true);
+    controller.setSessionState(true);
+    transport.sent.clear();
+    require(controller.init(), "Reconnect failed");
+    require(play->value == 1 && record->value == 0 && session->value == 1,
+        "Reconnect lost offline application state");
+    require(playPresses == 3 && recordPresses == 1 && sessionPresses == 1,
+        "Reconnect replayed button actions");
+    transport.sent.clear();
+    transport.receive({0x90, 91, 127});
+    transport.receive({0x90, 93, 127});
+    transport.receive({0x90, 102, 127});
+    require(playPresses == 4 && recordPresses == 2 && sessionPresses == 2,
+        "Disconnect left a button held");
+    transport.failSend = true;
+    controller.setRecordState(true);
+    require(transport.sent.empty(), "Failed button send was accepted");
+    transport.failSend = false;
+    controller.loop();
+    expectMessage(transport, 0, {0x90, 93, 3});
+    transport.sent.clear();
+    controller.loop();
+    require(transport.sent.empty(), "Successful retry did not clear pending feedback");
+    require(legacyPresses == 0, "Explicit and legacy press callbacks both fired");
+    controller.onPlayPressed = nullptr;
+    transport.receive({0x80, 91, 0});
+    transport.receive({0x90, 91, 127});
+    require(legacyPresses == 1 && play->value == 0,
+        "Legacy press fallback lost authoritative application state");
+    transport.sent.clear();
+    play->setAppValue(1);
+    controller.loop();
+    expectMessage(transport, 0, {0x90, 91, 3});
+    require(legacyPresses == 1, "Direct app value update echoed a hardware action");
+}
+
 void testSysExBounds() {
     FakeTransport transport;
     APC40Device device(transport);
@@ -591,6 +691,102 @@ void testConnectionResynchronization() {
     expectMessage(transport, 3, {0xB0, 48, 73});
 }
 
+#ifdef ENABLE_PARAMETERS_MIDI_LEARN
+void testLearnCandidatesAndSessionState() {
+    FakeTransport transport;
+    APC40Controller controller(transport);
+    uint32_t now = 100;
+    controller.setMillisProvider([&] { return now; });
+    require(controller.init(), "Controller initialization failed");
+    controller.setMIDILearnDeviceState(true);
+    require(!controller.midiLearnDeviceState, "Session armed without a host target");
+    controller.setMIDILearnHostState(true);
+    require(controller.getMidiLearnState() == MIDILearnState::Pending, "Host did not enter pending state");
+    transport.sent.clear();
+    transport.receive({0x90, 102, 127});
+    transport.receive({0x90, 102, 127});
+    require(controller.getMidiLearnState() == MIDILearnState::Active, "Session did not arm once");
+    now += 250;
+    controller.loop();
+    expectMessage(transport, 0, {0x80, 102, 0});
+    transport.sent.clear();
+    controller.loop();
+    require(transport.sent.empty(), "Blink sent duplicate feedback");
+    now += 250;
+    transport.failSend = true;
+    controller.loop();
+    require(transport.sent.empty(), "Failed blink send was accepted");
+    transport.failSend = false;
+    controller.loop();
+    expectMessage(transport, 0, {0x90, 102, 3});
+
+    std::vector<APC40ControlEvent> candidates;
+    bool accept = false;
+    controller.onLearnCandidate = [&](const APC40ControlEvent& event) {
+        candidates.push_back(event);
+        if (event.control.kind == APC40ControlKind::TrackKnob) {
+            APC40VirtualEncoderState state;
+            require(controller.getTrackKnobState(static_cast<APC40TrackKnobBank>(event.control.bank),
+                event.control.index, state) && state.value == event.value, "Learn ran before bank value update");
+        }
+        return accept;
+    };
+    auto* overlapping = new APCControl(APCControlType::Encoder, 48, 0, "Overlap", false);
+    int updates = 0;
+    overlapping->onAPCValueChanged = [&](float) { ++updates; };
+    controller.controls.add(overlapping);
+    transport.receive({0x90, 88, 127});
+    require(transport.receive({0xB0, 48, 99}), "Learning changed bank CC consumption");
+    require(updates == 1 && candidates.size() == 1, "Matching control update or candidate was lost");
+    require(candidates.back().control.kind == APC40ControlKind::TrackKnob &&
+        candidates.back().control.bank == 1 && candidates.back().control.index == 0,
+        "Learn did not preserve logical bank identity");
+    transport.receive({0x90, 65, 127});
+    transport.receive({0xB0, 23, 71});
+    require(candidates.back().control.kind == APC40ControlKind::DeviceKnob &&
+        candidates.back().control.bank == 7 && candidates.back().control.index == 7,
+        "Device knob identity was wrong");
+    for (uint8_t track = 0; track < 8; ++track) {
+        require(!transport.receive({static_cast<uint8_t>(0xB0 | track), 7, 91}), "Unbound fader lost raw fallback");
+        require(candidates.back().control.kind == APC40ControlKind::TrackFader &&
+            candidates.back().control.index == track, "Fader track identity was wrong");
+    }
+    require(!transport.receive({0xB0, 14, 31}), "Unbound master lost raw fallback");
+    require(candidates.back().control.kind == APC40ControlKind::MasterFader, "Master candidate was lost");
+    require(!transport.receive({0xB0, 15, 32}), "Unbound crossfader lost raw fallback");
+    require(candidates.back().control.kind == APC40ControlKind::Crossfader, "Crossfader candidate was lost");
+    const auto count = candidates.size();
+    transport.receive({0xB1, 48, 99});
+    transport.receive({0xB1, 14, 99});
+    transport.receive({0xB8, 7, 99});
+    transport.receive({0xB0, 100, 99});
+    transport.receive({0xB0, 13, 1});
+    transport.receive({0xB0, 47, 0});
+    transport.receive({0x90, 91, 127});
+    require(candidates.size() == count && controller.midiLearnDeviceState,
+        "Unsupported event learned or disarmed capture");
+    controller.bank_sets[0]->onBankedChange = [&](int, int, uint8_t) {
+        controller.bank_sets[0]->setBank(2);
+    };
+    accept = true;
+    transport.receive({0xB0, 48, 100});
+    require(candidates.back().control.bank == 1 && controller.bank_sets[0]->getCurrentBank() == 2,
+        "Application bank change altered the incoming control identity");
+    require(!controller.midiLearnDeviceState, "Accepted assignment did not disarm device");
+    transport.receive({0xB0, 48, 101});
+    require(candidates.size() == count + 1, "Completed learn accepted another event");
+    controller.setMIDILearnDeviceState(true);
+    controller.setMIDILearnHostState(false);
+    controller.setMIDILearnHostState(true);
+    require(!controller.midiLearnDeviceState, "Host cancellation preserved stale arming");
+    controller.setMIDILearnDeviceState(true);
+    transport.close();
+    require(!controller.midiLearnDeviceState, "Disconnect preserved stale arming");
+    require(controller.init(), "Reconnect failed");
+    require(controller.getMidiLearnState() == MIDILearnState::Pending, "Reconnect did not restore pending state");
+}
+#endif
+
 int main() {
     struct Test {
         const char* name;
@@ -609,8 +805,12 @@ int main() {
         {"logical track knob API", testLogicalTrackKnobAPI},
         {"message decoding and malformed input", testMessageDecoding},
         {"CC consumption and raw fallback", testControlChangeConsumption},
+        {"transport button events and application state", testTransportButtonState},
         {"SysEx lengths and bounds", testSysExBounds},
         {"startup and reconnect state", testConnectionResynchronization},
+        #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+            {"learn candidates and Session state", testLearnCandidatesAndSessionState},
+        #endif
     };
 
     int failures = 0;

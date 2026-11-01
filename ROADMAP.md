@@ -86,6 +86,13 @@ only physical edits invoke the source-change callback.
 
 ## Next: Desired Feedback And Firmware Integration
 
+Implemented for PLAY/RECORD/SESSION: press events independent of desired LED
+state, held-note suppression, release handling, change-only feedback with
+failed-send retry, and reconnect restoration without action replay. Nexus6
+mirrors playback and an app-owned recording mode; SESSION has a dormant app
+hook/state setter pending the optional binding feature. Remaining work below
+applies to other controls and the fuller feedback model.
+
 1. Add explicit control capabilities and channel rules for the remaining
    buttons, encoders, and grid. Avoid broad note-range heuristics.
 2. Expose press/release events independently from desired LED state. Handle

@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(APC40_BUILD_HOST "Build the RtMidi hardware host" ON)
+option(APC40_ENABLE_MIDI_LEARN "Enable portable MIDI learn candidates and SESSION state" OFF)
 
 set(APC40_SOURCES
     src/APCControl.cpp
@@ -17,6 +18,9 @@ set(APC40_SOURCES
 
 add_library(apc40_core STATIC ${APC40_SOURCES})
 target_include_directories(apc40_core PUBLIC src external/foundling/include)
+if(APC40_ENABLE_MIDI_LEARN)
+    target_compile_definitions(apc40_core PUBLIC ENABLE_PARAMETERS_MIDI_LEARN)
+endif()
 
 if(APC40_BUILD_HOST)
     add_subdirectory(external/rtmidi)

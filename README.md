@@ -70,7 +70,7 @@ cmake --build build-tests --config Debug --target apc40_tests
 cmake -E chdir build-tests ctest -C Debug -R apc40_native --output-on-failure
 ```
 
-The 14-case suite covers bank selection, releases, invalid bank indices,
+The default 15-case suite covers bank selection, releases, invalid bank indices,
 independent bank values, recalled ring feedback, MIDI channel filtering,
 outgoing MIDI bytes, and application-driven updates without callback echo. It
 also covers malformed MIDI, note-on-zero releases, bounded seven-bit SysEx
@@ -80,6 +80,102 @@ slots. CC consumption tests cover bound/unbound callbacks, wrong channels,
 registered controls, raw observers, and bank storage. Stable names and invalid
 name lookups are checked with the optional parameter adapter disabled, without
 Arduino or parameters headers.
+
+Transport-button cases check pre-init/offline state, press versus release,
+held-note suppression, wrong-channel input, software-driven LEDs, legacy callback
+fallback, reconnect without actions, and retry after a failed LED send.
+
+Enable `APC40_ENABLE_MIDI_LEARN` in the CMake cache and rebuild `apc40_tests`
+to include the sixteenth case. The public compile definition applies
+`ENABLE_PARAMETERS_MIDI_LEARN` consistently to the core and its callers.
+This case needs no parameter headers: it checks logical candidates, unchanged
+CC consumption, rejected and accepted capture, input-time bank identity even
+when callbacks switch banks, SESSION blinking/retry, cancellation, and reconnect.
+
+## Transport Buttons
+
+PLAY, RECORD, and SESSION expose `onPlayPressed`, `onRecordPressed`, and
+`onSessionPressed` callbacks. A callback is invoked once per press, not on
+release or repeated Note On while held. Nonzero Note Off and Note On with zero
+velocity both release the button. Only MIDI channel 1 is accepted.
+
+Presses do not replace desired LED state with the incoming velocity or toggle
+application state automatically. Applications supply that state through
+`setPlayState(bool)`, `setRecordState(bool)`, and `setSessionState(bool)`:
+
+```cpp
+apc.setPlayState(app.isPlaying());
+apc.onPlayPressed = [&] {
+  app.togglePlayback();
+  apc.setPlayState(app.isPlaying());
+};
+```
+
+These setters also work before `init()` and while disconnected. Identical state
+is not resent, and failed sends remain pending for `apc.loop()` to retry.
+Reconnect clears held-button and sent-feedback state, then restores desired
+LEDs after the introduction without invoking press callbacks. Call the setters
+when software state changes, or sample application state from the normal loop.
+The existing `setAppValue()`/`redraw()` path still works; `apc.loop()` also checks
+these three controls for app-value changes.
+
+For compatibility, an existing transport control's `onAPCValueChanged` is used
+as a press-only fallback if its explicit `on...Pressed` callback is unset. When
+both are installed, only the explicit callback runs. `sendNoteOn()` and
+`sendNoteOff()` now return the backend send result; callers may ignore it.
+
+Nexus6 uses `clock_stop()`/`clock_continue()` for pause/resume, without resetting
+song position, and mirrors its authoritative `playing` state. RECORD toggles
+the app-owned `transport_state.record_enabled`, initially false. This is a mode
+flag, not an implemented recorder. Other software can change that flag directly
+or use the behavior's `set_record_enabled()`; the regular behavior loop updates
+the LED even while playback is paused.
+
+With learning disabled, SESSION is inactive by default. Nexus6 exposes
+`on_session_pressed` and `set_session_state(bool)` for application use.
+
+## MIDI Learn
+
+Define `ENABLE_PARAMETERS_MIDI_LEARN` for all firmware translation units to
+enable portable capture state and `onLearnCandidate(const APC40ControlEvent&)`.
+The core never includes or calls `ParameterManager`. A candidate contains a
+typed control kind, zero-based bank/index, input phase, and raw MIDI value.
+Track and device knobs preserve the bank at input time; track/master/crossfaders
+and nonzero Cue detents also produce candidates. Tempo, bank/transport buttons,
+wrong-channel messages, and unknown controls do not. Button/pad kinds and
+press/release phases reserve the extension point; they are not learnable yet.
+
+The host must mirror its pending target through `setMIDILearnHostState(bool)`.
+SESSION then arms/disarms device capture. An explicit `onSessionPressed`
+callback remains authoritative and must forward that operation when desired.
+SESSION is solid while the host is pending and blinks every 250 ms when both
+sides are active. Supply `setMillisProvider()` for blinking; without a clock,
+active capture stays solid. LED sends retain normal deduplication and retry.
+Cancellation and disconnect clear device arming. Inactive feedback restores the
+normal state set through `setSessionState()`.
+
+Return `true` from `onLearnCandidate` only when an assignment succeeds; this
+disarms device capture. Returning `false` leaves it armed. This result is
+independent of CC consumption, so ordinary source updates still run and unbound
+faders still reach a raw CC fallback. Bank recall and app-originated updates
+never propose candidates.
+
+With `APC40_ENABLE_PARAMETERS=1`, `APC40ParameterInputMap` provides checked,
+constant-time `bind(controlId, input)` and `resolve(controlId)` operations.
+It borrows input pointers, performs no registration/allocation during reception,
+and returns `nullptr` for unbound or unsupported identities. It has slots for
+24 track knobs, 64 device knobs, eight track faders, master, crossfader, and Cue.
+The existing logical knob adapter also accepts an explicit `APC40ControlId`
+for a device-bank source; `getKnobState`/`setKnobState` address either knob kind.
+
+Nexus6 maps its existing 35 inputs, without allocating new device-bank inputs.
+Unregistered device knobs therefore leave capture armed. The behavior owns
+mapping and manager calls; manager target revisions require a fresh SESSION
+press after a target switch, cancellation, or completion, even before the next
+regular loop. Learning assigns one modulation-slot source through
+`set_slot_input`, preserves amount/polarity, and clears the pending target and
+its runtime indicator. Selecting the same menu learn indicator cancels it.
+This is source learning, not a direct parameter-base-value binding engine.
 
 ## Banked Controls
 

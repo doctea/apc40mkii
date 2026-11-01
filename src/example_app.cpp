@@ -23,27 +23,19 @@ void ExampleApp::printState() const {
 }
 
 void ExampleApp::bind_to_apc(APC40Controller& apc) {
-    APCControl* playControl = apc.bind_note(APC40MKII::transport::NOTE_BUTTON_PLAY, 0);
-    APCControl* recordControl = apc.bind_note(APC40MKII::transport::NOTE_BUTTON_RECORD, 0);
-    if (playControl) {
-        playControl->onAPCValueChanged = [this, playControl](float value) {
-            if (value <= 0)
-                return;
-            if (isPlaying)
-                stop();
-            else
-                play();
-            playControl->value = isPlaying ? 1.0f : 0.0f;
-        };
-    }
-    if (recordControl) {
-        recordControl->onAPCValueChanged = [this, recordControl](float value) {
-            if (value <= 0)
-                return;
-            toggleRecording();
-            recordControl->value = isRecording ? 1.0f : 0.0f;
-        };
-    }
+    apc.setPlayState(isPlaying);
+    apc.setRecordState(isRecording);
+    apc.onPlayPressed = [this, &apc] {
+        if (isPlaying)
+            stop();
+        else
+            play();
+        apc.setPlayState(isPlaying);
+    };
+    apc.onRecordPressed = [this, &apc] {
+        toggleRecording();
+        apc.setRecordState(isRecording);
+    };
 
     apc.onTrackKnobChanged = [](APC40TrackKnobBank bank, uint8_t track, uint8_t value) {
         const char* bankName = "Pan";
