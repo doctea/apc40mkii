@@ -140,10 +140,11 @@ Define `ENABLE_PARAMETERS_MIDI_LEARN` for all firmware translation units to
 enable portable capture state and `onLearnCandidate(const APC40ControlEvent&)`.
 The core never includes or calls `ParameterManager`. A candidate contains a
 typed control kind, zero-based bank/index, input phase, and raw MIDI value.
-Track and device knobs preserve the bank at input time; track/master/crossfaders
-and nonzero Cue detents also produce candidates. Tempo, bank/transport buttons,
-wrong-channel messages, and unknown controls do not. Button/pad kinds and
-press/release phases reserve the extension point; they are not learnable yet.
+Track and device knobs preserve the bank at input time; track/master/crossfaders,
+nonzero Cue detents, and APC button/pad presses also produce candidates. SESSION
+is reserved for arming and is not learnable. Note candidates preserve the
+zero-based MIDI channel and note number. Tempo, wrong-channel CC messages,
+releases, and unknown CCs do not produce candidates.
 
 The host must mirror its pending target through `setMIDILearnHostState(bool)`.
 SESSION then arms/disarms device capture. An explicit `onSessionPressed`
@@ -160,22 +161,39 @@ independent of CC consumption, so ordinary source updates still run and unbound
 faders still reach a raw CC fallback. Bank recall and app-originated updates
 never propose candidates.
 
-With `APC40_ENABLE_PARAMETERS=1`, `APC40ParameterInputMap` provides checked,
-constant-time `bind(controlId, input)` and `resolve(controlId)` operations.
-It borrows input pointers, performs no registration/allocation during reception,
-and returns `nullptr` for unbound or unsupported identities. It has slots for
-24 track knobs, 64 device knobs, eight track faders, master, crossfader, and Cue.
-The existing logical knob adapter also accepts an explicit `APC40ControlId`
-for a device-bank source; `getKnobState`/`setKnobState` address either knob kind.
+With `APC40_ENABLE_PARAMETERS=1`, `APC40ParameterInputMap` provides checked
+`bind(controlId, input)` operations for knob/fader slots and a typed
+`bind_note(controlId, input)` operation for button/pad sources. It borrows input
+pointers and performs no registration/allocation during reception. Knob and
+fader lookups use fixed slots; optional note lookups use a bounded table of 128
+registered identities. Unbound or unsupported identities resolve to `nullptr`.
+`release_note_inputs()` releases momentary sources when the device disconnects.
+The map covers 24 track knobs, 64 device knobs, eight track faders, master,
+crossfader, Cue, and registered button/pad notes.
 
-Nexus6 maps its existing 35 inputs, without allocating new device-bank inputs.
-Unregistered device knobs therefore leave capture armed. The behavior owns
-mapping and manager calls; manager target revisions require a fresh SESSION
-press after a target switch, cancellation, or completion, even before the next
-regular loop. Learning assigns one modulation-slot source through
-`set_slot_input`, preserves amount/polarity, and clears the pending target and
-its runtime indicator. Selecting the same menu learn indicator cancels it.
-This is source learning, not a direct parameter-base-value binding engine.
+The optional parameter adapter supplies binary `APC40NoteParameterInput`
+sources. They are momentary by default: press is 1 and release is 0. Set an
+input to `APC40NoteParameterInputMode::Toggle` to change state once per press;
+release leaves the value latched. The app can independently enable
+`ENABLE_APC40_DEVICE_KNOBS` (64 inputs), `ENABLE_APC40_CLIP_PADS` (40),
+`ENABLE_APC40_TRACK_BUTTONS` (48), and `ENABLE_APC40_GENERAL_BUTTONS` (30)
+alongside the original 35 knob/fader inputs. Nexus6 enables device knobs by
+default, for 99 inputs; its local feature defines can be edited to select other
+groups. `ENABLE_APC40_EXTENDED_INPUTS` remains a compatibility umbrella that
+enables all four groups (217 total). Define
+`APC40_INPUT_FEATURES_CONFIGURED_EXTERNALLY` to suppress the Nexus6 header's
+device-knob default when feature macros are supplied elsewhere. Disabled
+device/note candidates remain unbound. `get_device_knob_input()` and
+`get_note_input()` provide checked access when their respective groups are
+enabled.
+
+The behavior owns mapping and manager calls; manager target revisions require a
+fresh SESSION press after a target switch, cancellation, or completion, even
+before the next regular loop. Learning assigns one modulation-slot source
+through `set_slot_input`, preserves amount/polarity, and clears the pending
+target and its runtime indicator. Selecting the same menu learn indicator
+cancels it. This is source learning, not a direct parameter-base-value binding
+engine.
 
 ## Banked Controls
 

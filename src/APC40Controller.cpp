@@ -19,8 +19,16 @@ bool APC40Controller::init() {
     }
 
     device.onNoteOn = [&](uint8_t note, uint8_t channel, uint8_t vel) {
-        if (handleTransportButton(note, channel, vel))
+        if (handleTransportButton(note, channel, vel)) {
+            #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+                if (note != APC40MKII::transport::NOTE_BUTTON_SESSION) {
+                    const APC40ControlKind kind = note <= 39
+                        ? APC40ControlKind::Pad : APC40ControlKind::Button;
+                    proposeLearnCandidate({{kind, channel, note}, APC40InputPhase::Press, vel});
+                }
+            #endif
             return;
+        }
 
         for (auto *bs : bank_sets) {
             bs->handleButton(note, vel, channel);
@@ -37,6 +45,13 @@ bool APC40Controller::init() {
                 redraw(ctrl);
             }
         }
+        #ifdef ENABLE_PARAMETERS_MIDI_LEARN
+            if (note != APC40MKII::transport::NOTE_BUTTON_SESSION) {
+                const APC40ControlKind kind = note <= 39
+                    ? APC40ControlKind::Pad : APC40ControlKind::Button;
+                proposeLearnCandidate({{kind, channel, note}, APC40InputPhase::Press, vel});
+            }
+        #endif
     };
 
     device.onNoteOff = [this](uint8_t note, uint8_t channel, uint8_t) {
